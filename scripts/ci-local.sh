@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# The local gate, run inside `nix develop`:
+#
+#   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over this script
+#   scripts/ci-local.sh checks   # the engine's suite (with the differential test against real
+#                                # yjs) and the flake's sandboxed checks
+#   scripts/ci-local.sh all      # lint + checks
+#
+# The differential test needs yjs 13.x and y-protocols on disk. By default it looks for a sibling
+# `vscode_client/node_modules`, then `web_client/node_modules`; set SELVAGE_YJS_NODE_MODULES (or
+# the Gradle property selvage.yjsNodeModules) to point elsewhere. It fails when none is found.
+set -euo pipefail
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+# `/tmp` is a RAM-backed tmpfs on some hosts, and building there has taken a machine down
+# before; keep every artefact inside the checkout.
+export TMPDIR="$repo_root/.tmp"
+mkdir -p "$TMPDIR"
+
+say() { printf '\n=== %s ===\n' "$*"; }
+
+job_lint() {
+  say "lint: ktlint"
+  ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
+  say "lint: shellcheck"
+  shellcheck scripts/ci-local.sh
+}
+
+job_checks() {
+  local system
+  system=$(nix eval --raw --impure --expr builtins.currentSystem)
+  say "checks: the engine's suite"
+  ./gradlew --max-workers=4 --console=plain :engine:test
+  say "checks: the flake's checks"
+  nix build ".#checks.${system}.ktlint" ".#checks.${system}.scripts" ".#checks.${system}.devshell" \
+    --no-link --print-build-logs
+}
+
+case "${1:-}" in
+  lint) job_lint ;;
+  checks) job_checks ;;
+  all) job_lint && job_checks ;;
+  *)
+    printf 'usage: %s [lint|checks|all]\n' "$0" >&2
+    exit 2
+    ;;
+esac
