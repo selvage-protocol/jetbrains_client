@@ -82,6 +82,7 @@ object Updates {
             clientRefs[client] = ClientRefs(0, refs)
             repeat(numberOfStructs) {
                 val struct = readStruct(decoder, client, clock, doc::get)
+                if (struct is Item) struct.requireEarlierOwnDependencies()
                 refs.add(struct)
                 clock += struct.length
             }

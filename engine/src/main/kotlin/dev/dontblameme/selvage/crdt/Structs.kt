@@ -136,6 +136,18 @@ class Item(
 
     val countable: Boolean get() = content.countable
 
+    /**
+     * Refuses an origin, right origin or parent on this item's own client at its clock or later:
+     * such a struct cannot exist yet, and yjs throws on it in the middle of integration.
+     */
+    internal fun requireEarlierOwnDependencies() {
+        for (dependency in listOfNotNull(origin, rightOrigin, parentID)) {
+            if (dependency.client == id.client && dependency.clock >= id.clock) {
+                throw DecodeException("item $id depends on $dependency, which is not before it")
+            }
+        }
+    }
+
     fun getMissingInternal(store: StructStore): Long? {
         origin?.let { if (it.client != id.client && it.clock >= store.getState(it.client)) return it.client }
         rightOrigin?.let { if (it.client != id.client && it.clock >= store.getState(it.client)) return it.client }

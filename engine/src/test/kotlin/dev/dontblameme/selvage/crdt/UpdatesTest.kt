@@ -152,6 +152,61 @@ class UpdatesTest {
         assertEquals(emptyMap<Long, Long>(), doc.store.stateVector())
     }
 
+    /**
+     * Client 9's "ok" at the root, then client 5's item 5:0 whose [dependency] names its own client
+     * at its own clock or later. yjs integrates client 9 first and then throws a TypeError, with
+     * "ok" left applied.
+     */
+    private fun ownClientDependency(dependency: String): ByteArray =
+        Lib0Encoder()
+            .apply {
+                writeVarUint(2)
+                writeVarUint(1)
+                writeVarUint(9)
+                writeVarUint(0)
+                writeUint8(Content.STRING)
+                writeVarUint(1)
+                writeVarString("t")
+                writeVarString("ok")
+                writeVarUint(1)
+                writeVarUint(5)
+                writeVarUint(0)
+                when (dependency) {
+                    "origin" -> {
+                        writeUint8(Struct.BIT8 or Content.STRING)
+                        writeVarUint(5)
+                        writeVarUint(3)
+                    }
+
+                    "rightOrigin" -> {
+                        writeUint8(Struct.BIT7 or Content.STRING)
+                        writeVarUint(5)
+                        writeVarUint(0)
+                    }
+
+                    else -> {
+                        writeUint8(Content.STRING)
+                        writeVarUint(0)
+                        writeVarUint(5)
+                        writeVarUint(0)
+                    }
+                }
+                writeVarString("x")
+                writeVarUint(0)
+            }.toByteArray()
+
+    @Test
+    fun a_dependency_on_the_items_own_client_at_or_after_it_is_refused_before_anything_integrates() {
+        for (dependency in listOf("origin", "rightOrigin", "parentID")) {
+            val doc = Doc(1)
+            val recorder = Recorder(doc)
+            assertFailsWith<DecodeException>(dependency) { Updates.applyUpdate(doc, ownClientDependency(dependency)) }
+            assertEquals("", doc.getText("t").toString(), dependency)
+            assertEquals(emptyMap<Long, Long>(), doc.store.stateVector(), dependency)
+            assertTrue(recorder.updates.isEmpty(), dependency)
+        }
+    }
+
     @Test
     fun the_delete_set_merges_adjacent_and_overlapping_ranges() {
         val ds = DeleteSet()
