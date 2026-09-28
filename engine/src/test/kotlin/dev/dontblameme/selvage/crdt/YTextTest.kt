@@ -104,20 +104,25 @@ class YTextTest {
     }
 
     /**
-     * YATA's second rule: an insert whose origin lies inside a concurrent run stays inside it,
-     * so a run typed after a conflicting insert is not split by the other client's text.
+     * YATA's second rule: an insert whose origin lies inside a concurrent run stays inside it.
+     * Client 2 types `b` after client 1's `a` while client 3, having seen neither, types `z` at
+     * the start: `b` follows `a` on every replica, whatever order they arrive in.
      */
     @Test
     fun a_run_typed_after_a_concurrent_insert_converges() {
         val one = Doc(1)
+        val two = Doc(2)
         val three = Doc(3)
-        one.getText(path).insert(0, "x")
-        one.getText(path).insert(1, "y")
+        one.getText(path).insert(0, "a")
+        sync(one, two)
+        two.getText(path).insert(1, "b")
         three.getText(path).insert(0, "z")
-        sync(one, three)
-        sync(three, one)
-        assertEquals("xyz", three.text())
-        assertEquals("xyz", one.text())
+        sync(three, two)
+        sync(two, three)
+        sync(two, one)
+        assertEquals("abz", three.text())
+        assertEquals("abz", two.text())
+        assertEquals("abz", one.text())
     }
 
     @Test
