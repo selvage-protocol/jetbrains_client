@@ -137,10 +137,12 @@ object TestPaths {
             }
             return@lazy dir
         }
+        // The pinned install beside the driver (`npm ci` in `engine/src/test/node`), then a sibling client's.
         val candidates =
-            ancestors()
-                .flatMap { sequenceOf(File(it, "vscode_client/node_modules"), File(it, "web_client/node_modules")) }
-                .toList()
+            listOf(File(workspaceRoot, "engine/src/test/node/node_modules")) +
+                ancestors()
+                    .flatMap { sequenceOf(File(it, "vscode_client/node_modules"), File(it, "web_client/node_modules")) }
+                    .toList()
         candidates.firstOrNull { File(it, "yjs/package.json").isFile && File(it, "y-protocols/package.json").isFile }
             ?: fail(
                 "no yjs for the differential test: set SELVAGE_YJS_NODE_MODULES (or -Pselvage.yjsNodeModules) " +

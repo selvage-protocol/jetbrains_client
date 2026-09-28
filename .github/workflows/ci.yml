@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The ktlint release the flake's nixpkgs carries, so a developer and the runner lint with
+      # the same rules. The checksum is of the release's own `ktlint` asset.
+      KTLINT_VERSION: "1.8.0"
+      KTLINT_SHA256: "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The engine's tests replay the specification's vectors, read from its published `main`:
+      # a change there that this client does not meet turns this job red, which is the point.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: selvage-protocol/specification
+          path: .ci/specification
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.18.0"
+
+      # The yjs the differential test drives, at the versions the lockfile pins.
+      - name: install the differential test's yjs
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: engine/src/test/node
+
+      - name: install ktlint
+        run: |
+          curl -sSfL -o ktlint "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
+          echo "${KTLINT_SHA256}  ktlint" | sha256sum -c -
+          chmod +x ktlint
+          sudo mv ktlint /usr/local/bin/ktlint
+
+      - name: lint
+        run: |
+          ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
+          shellcheck scripts/*.sh
+
+      - name: the engine's suite
+        run: ./gradlew --max-workers=4 --console=plain :engine:test
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
