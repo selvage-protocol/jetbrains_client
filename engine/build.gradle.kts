@@ -25,6 +25,15 @@ tasks.test {
     maxParallelForks = 1
     inputs.dir("src/test/node")
     systemProperty("selvage.workspaceRoot", rootDir.absolutePath)
+    // Keep the test JVM's temporary files in the build directory, not the system's.
+    val testTmp =
+        layout.buildDirectory
+            .dir("tmp/test-jvm")
+            .get()
+            .asFile
+    doFirst { testTmp.mkdirs() }
+    systemProperty("java.io.tmpdir", testTmp.absolutePath)
+    jvmArgs("-XX:-UsePerfData")
     passThrough.forEach { (property, variable) ->
         val value = providers.gradleProperty(property).orNull ?: System.getenv(variable)
         if (value != null) {

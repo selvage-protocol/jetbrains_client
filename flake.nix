@@ -42,6 +42,12 @@
             ];
             JAVA_HOME = t.jdk.home;
             SELVAGE_NODE = "${t.node}/bin/node";
+            # Temporary files stay in the checkout: the JVM ignores TMPDIR, so it is told as well.
+            shellHook = ''
+              export TMPDIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.tmp"
+              mkdir -p "$TMPDIR"
+              export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$TMPDIR -XX:-UsePerfData"
+            '';
           };
         }
       );

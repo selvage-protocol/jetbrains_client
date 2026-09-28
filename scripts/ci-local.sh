@@ -19,6 +19,8 @@ cd "$repo_root"
 # before; keep every artefact inside the checkout.
 export TMPDIR="$repo_root/.tmp"
 mkdir -p "$TMPDIR"
+# The JVM ignores TMPDIR; tell it too, and keep its performance data out of the system's.
+export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$TMPDIR -XX:-UsePerfData"
 
 say() { printf '\n=== %s ===\n' "$*"; }
 
