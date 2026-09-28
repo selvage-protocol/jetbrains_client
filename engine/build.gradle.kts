@@ -12,13 +12,23 @@ dependencies {
 
 // The differential test drives real yjs through Node. Where yjs lives, which Node runs it and
 // where the specification's vectors are come from Gradle properties first, then the environment;
-// the test resolves the defaults and fails with the reason when one is missing.
+// the test resolves the other defaults and fails with the reason when one is missing.
 val passThrough =
     mapOf(
         "selvage.yjsNodeModules" to "SELVAGE_YJS_NODE_MODULES",
         "selvage.node" to "SELVAGE_NODE",
-        "selvage.specification" to "SELVAGE_SPECIFICATION",
     )
+
+// The specification whose vectors the tests replay: the one named, else the sibling checkout.
+val specification: File? =
+    providers
+        .gradleProperty("selvage.specification")
+        .orElse(providers.environmentVariable("SELVAGE_SPECIFICATION"))
+        .map { file(it) }
+        .orNull
+        ?: generateSequence(rootDir.absoluteFile) { it.parentFile }
+            .map { it.resolve("specification") }
+            .firstOrNull { it.resolve("PROTOCOL.md").isFile }
 
 tasks.test {
     useJUnitPlatform()
@@ -35,11 +45,20 @@ tasks.test {
     systemProperty("java.io.tmpdir", testTmp.absolutePath)
     jvmArgs("-XX:-UsePerfData")
     passThrough.forEach { (property, variable) ->
-        val value = providers.gradleProperty(property).orNull ?: System.getenv(variable)
+        val value = providers.gradleProperty(property).orElse(providers.environmentVariable(variable)).orNull
         if (value != null) {
             systemProperty(property, value)
             inputs.property(property, value)
         }
+    }
+    // The vectors' contents, not just their path: a change to them re-runs the tests instead of
+    // restoring an up-to-date or cached result.
+    specification?.let {
+        systemProperty("selvage.specification", it.absolutePath)
+        inputs
+            .dir(it.resolve("vectors"))
+            .withPropertyName("specificationVectors")
+            .withPathSensitivity(PathSensitivity.RELATIVE)
     }
     testLogging {
         events("failed")

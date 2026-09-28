@@ -150,9 +150,9 @@ object TestPaths {
             )
     }
 
+    /** Resolved by the build, which tracks the vectors as an input: the named checkout, else the sibling one. */
     val specification: File by lazy {
-        System.getProperty("selvage.specification")?.let { return@lazy File(it) }
-        ancestors().map { File(it, "specification") }.firstOrNull { File(it, "PROTOCOL.md").isFile }
+        System.getProperty("selvage.specification")?.let { File(it) }
             ?: fail("no specification checkout: set SELVAGE_SPECIFICATION (or -Pselvage.specification)")
     }
 }
