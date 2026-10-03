@@ -1,0 +1,45 @@
+<idea-plugin>
+    <id>dev.dontblameme.selvage</id>
+    <name>Selvage</name>
+    <vendor url="https://selvage.dontblameme.dev">Selvage Protocol</vendor>
+    <description><![CDATA[
+    Share a link, come edit my code with me. Host a live session from the project you have open and
+    send the invite link, or join one from an invite link: everyone edits the same files, sees each
+    other's carets, and can go to or follow a participant. Works with the Selvage clients for
+    VS Code, Neovim and the browser.
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Selvage" displayType="BALLOON"/>
+        <applicationConfigurable parentId="tools" id="dev.dontblameme.selvage.settings" displayName="Selvage"
+                                 instance="dev.dontblameme.selvage.intellij.settings.SelvageConfigurable"/>
+        <statusBarWidgetFactory id="Selvage.Session" order="first"
+                                implementation="dev.dontblameme.selvage.intellij.ui.SessionWidgetFactory"/>
+        <statusBarWidgetFactory id="Selvage.Invite" order="after Selvage.Session"
+                                implementation="dev.dontblameme.selvage.intellij.ui.InviteWidgetFactory"/>
+        <statusBarWidgetFactory id="Selvage.Follow" order="after Selvage.Invite"
+                                implementation="dev.dontblameme.selvage.intellij.ui.FollowWidgetFactory"/>
+        <toolWindow id="Selvage" anchor="left" secondary="true" icon="AllIcons.Toolwindows.ToolWindowMessages"
+                    factoryClass="dev.dontblameme.selvage.intellij.ui.ParticipantsToolWindowFactory"/>
+        <projectViewNodeDecorator implementation="dev.dontblameme.selvage.intellij.ui.PeerBadgeDecorator"/>
+    </extensions>
+
+    <actions>
+        <group id="Selvage.Group" text="Selvage" popup="true">
+            <action id="Selvage.Host" class="dev.dontblameme.selvage.intellij.actions.HostAction"/>
+            <action id="Selvage.Join" class="dev.dontblameme.selvage.intellij.actions.JoinAction"/>
+            <action id="Selvage.CopyInvite" class="dev.dontblameme.selvage.intellij.actions.CopyInviteAction"/>
+            <action id="Selvage.OpenDocument" class="dev.dontblameme.selvage.intellij.actions.OpenDocumentAction"/>
+            <action id="Selvage.Fetch" class="dev.dontblameme.selvage.intellij.actions.FetchAction"/>
+            <action id="Selvage.Leave" class="dev.dontblameme.selvage.intellij.actions.LeaveAction"/>
+            <action id="Selvage.DisplayName" class="dev.dontblameme.selvage.intellij.actions.DisplayNameAction"/>
+            <action id="Selvage.ChangeServer" class="dev.dontblameme.selvage.intellij.actions.ChangeServerAction"/>
+            <action id="Selvage.Peers" class="dev.dontblameme.selvage.intellij.actions.PeersAction"/>
+            <action id="Selvage.GoToParticipant" class="dev.dontblameme.selvage.intellij.actions.GoToParticipantAction"/>
+            <action id="Selvage.FollowParticipant" class="dev.dontblameme.selvage.intellij.actions.FollowParticipantAction"/>
+            <action id="Selvage.StopFollowing" class="dev.dontblameme.selvage.intellij.actions.StopFollowingAction"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
+    </actions>
+</idea-plugin>

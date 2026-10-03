@@ -8,11 +8,13 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    // The plugin declares the IntelliJ Platform's repositories itself; everything else resolves here.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         mavenCentral()
     }
 }
 
-// `engine` is the session layer with no IntelliJ dependency; the IDE adapter joins it as `plugin`.
+// `engine` is the session layer with no IntelliJ dependency; `plugin` is the IDE adapter over it.
 include("engine")
+include("plugin")
