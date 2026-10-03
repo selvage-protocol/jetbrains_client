@@ -204,7 +204,7 @@ class PeerSession(
                 paths.sorted()
         }
 
-    /** Every path this client or a peer holds: what a host must serve (§13.8). */
+    /** Every path this client or a peer holds: the room's open set (§13.7). */
     fun openSet(): List<String> = (held + reader.holds.values.flatten()).toSortedSet().toList()
 
     fun text(path: String): String = if (path in doc.rootNames) doc.getText(path).toString() else ""

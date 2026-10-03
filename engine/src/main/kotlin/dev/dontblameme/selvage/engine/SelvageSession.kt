@@ -664,7 +664,7 @@ class SelvageSession private constructor(
         session.ending?.let { end(SessionEnding.of(it)) }
     }
 
-    /** §13.8: a host seeds a listed path a peer holds and the replica lacks. */
+    /** A host seeds a path its listing grants and a peer holds, when the replica lacks it (§13.3, §13.7). */
     private fun serve(session: PeerSession) {
         val host = content ?: return
         val listed = session.listing.toHashSet()
