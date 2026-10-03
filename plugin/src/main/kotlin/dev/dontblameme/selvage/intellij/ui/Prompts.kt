@@ -69,8 +69,17 @@ interface Prompts {
                     .createPopupChooserBuilder(rows.indices.toList())
                     .setTitle(title)
                     .setRenderer(
-                        com.intellij.ui.SimpleListCellRenderer
-                            .create("") { rows[it] },
+                        object : com.intellij.ui.ColoredListCellRenderer<Int>() {
+                            override fun customizeCellRenderer(
+                                list: javax.swing.JList<out Int>,
+                                value: Int,
+                                index: Int,
+                                selected: Boolean,
+                                hasFocus: Boolean,
+                            ) {
+                                append(rows[value])
+                            }
+                        },
                     ).setItemChosenCallback { chosen(it) }
                     .setNamerForFiltering { rows[it] }
                     .createPopup()

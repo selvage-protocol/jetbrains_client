@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
@@ -14,14 +15,21 @@ repositories {
 
 version = "0.1.0"
 
+val ideVersion = providers.gradleProperty("selvage.ideVersion").getOrElse("2026.2.3")
+
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        // Implementing a platform interface adds no bridges to its default methods, which the
+        // Plugin Verifier would read as this plugin calling and overriding them.
+        jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
+    }
 }
 
 dependencies {
     implementation(project(":engine"))
     intellijPlatform {
-        intellijIdea(providers.gradleProperty("selvage.ideVersion").orElse("2026.2.3"))
+        intellijIdea(ideVersion)
         testFramework(TestFrameworkType.Platform)
         pluginVerifier()
     }
@@ -34,6 +42,8 @@ configurations.named("runtimeClasspath") {
 }
 
 intellijPlatform {
+    // Indexing the settings page for search starts a whole IDE; the page has five fields.
+    buildSearchableOptions = false
     pluginConfiguration {
         id = "dev.dontblameme.selvage"
         name = "Selvage"
@@ -47,9 +57,10 @@ intellijPlatform {
             untilBuild = provider { null }
         }
     }
+    // The Plugin Verifier against the IDE the plugin targets.
     pluginVerification {
         ides {
-            recommended()
+            create(IntelliJPlatformType.IntellijIdea, ideVersion)
         }
     }
 }

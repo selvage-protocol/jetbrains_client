@@ -1,6 +1,6 @@
 package dev.dontblameme.selvage.intellij.session
 
-import com.intellij.ide.impl.OpenProjectTask
+import com.intellij.ide.impl.ProjectUtil
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.openapi.Disposable
@@ -12,7 +12,6 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
-import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.util.Alarm
 import dev.dontblameme.selvage.engine.HostContent
@@ -765,7 +764,7 @@ class SelvageService : Disposable {
          */
         private fun openMirrorProject(root: Path): Project? {
             TrustedProjects.setProjectTrusted(root, false)
-            return ProjectManagerEx.getInstanceEx().openProject(root, OpenProjectTask(true, null, false, false))
+            return ProjectUtil.openOrImport(root, null, true)
         }
     }
 }
