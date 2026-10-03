@@ -35,8 +35,40 @@ class SyncTest {
     }
 
     @Test
-    fun unknown_and_truncated_messages_are_refused() {
-        for (frame in listOf("04", "7f", "0003", "0000", "000002", "0101", "0200", "000001" + "00" + "04")) {
+    fun the_auth_body_carries_a_reason_only_for_status_zero() {
+        // §7: `varUint(status)`, then `varString(reason)` when the status is 0 and nothing more for
+        // any other, so the byte after a non-zero status is the next message.
+        val messages = Sync.decode(("0201" + "03" + "0200026e6f" + "02" + "02" + "010100").hexToBytes())
+        assertEquals(5, messages.size)
+        assertEquals(1L, assertIs<SyncMessage.Auth>(messages[0]).status)
+        assertEquals(null, (messages[0] as SyncMessage.Auth).reason)
+        assertEquals(SyncMessage.QueryAwareness, messages[1])
+        assertEquals("no", assertIs<SyncMessage.Auth>(messages[2]).reason)
+        assertEquals(2L, assertIs<SyncMessage.Auth>(messages[3]).status)
+        assertIs<SyncMessage.Awareness>(messages[4])
+        assertEquals(5, Sync.decode(Sync.encode(messages)).size)
+    }
+
+    @Test
+    fun an_undefined_message_ends_the_reading_and_what_came_before_it_stands() {
+        // §7: a `message_type` above 3 or a `sync_type` above 2 has no length to read past.
+        for (frame in listOf("04", "7f", "0003", "04" + "000200")) {
+            assertTrue(Sync.decode(frame.hexToBytes()).isEmpty(), frame)
+        }
+        val update = "000001" + "00" + "04" + "000200"
+        assertContentEquals(
+            byteArrayOf(0),
+            assertIs<SyncMessage.Step1>(Sync.decode(update.hexToBytes()).single()).stateVector,
+        )
+        val messages = Sync.decode(("010100" + "000200" + "0009" + "ffff").hexToBytes())
+        assertEquals(2, messages.size)
+        assertIs<SyncMessage.Awareness>(messages[0])
+        assertIs<SyncMessage.Update>(messages[1])
+    }
+
+    @Test
+    fun a_truncated_message_is_refused() {
+        for (frame in listOf("0000", "000002", "0101", "0200", "02", "00", "010100" + "0002")) {
             assertFailsWith<DecodeException>(frame) { Sync.decode(frame.hexToBytes()) }
         }
     }

@@ -91,19 +91,23 @@ object Sync {
         encoder.writeVarUint8Array(payload)
     }
 
-    /** Every message of [frame]; throws [DecodeException] on an unknown or truncated one. */
+    /**
+     * The messages of [frame], up to the first one §7's table does not define: a `message_type`
+     * above 3 or a `sync_type` above 2 has no length to read past, so reading stops there and the
+     * messages before it stand. Throws [DecodeException] when a defined message is truncated.
+     */
     fun decode(frame: ByteArray): List<SyncMessage> {
         val decoder = Lib0Decoder(frame)
         val messages = ArrayList<SyncMessage>()
         while (decoder.hasContent()) {
             messages +=
-                when (val type = decoder.readVarUint()) {
+                when (decoder.readVarUint()) {
                     MESSAGE_SYNC -> {
-                        when (val syncType = decoder.readVarUint()) {
+                        when (decoder.readVarUint()) {
                             SYNC_STEP1 -> SyncMessage.Step1(decoder.readVarUint8Array())
                             SYNC_STEP2 -> SyncMessage.Step2(decoder.readVarUint8Array())
                             SYNC_UPDATE -> SyncMessage.Update(decoder.readVarUint8Array())
-                            else -> throw DecodeException("unknown sync type $syncType")
+                            else -> return messages
                         }
                     }
 
@@ -121,7 +125,7 @@ object Sync {
                     }
 
                     else -> {
-                        throw DecodeException("unknown message type $type")
+                        return messages
                     }
                 }
         }
