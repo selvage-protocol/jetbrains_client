@@ -130,12 +130,12 @@ sealed interface YAny {
                 }
 
                 118 -> {
-                    val count = decoder.readLength()
+                    val count = decoder.readCount()
                     Obj.of(List(count) { decoder.readVarString() to read(decoder) })
                 }
 
                 117 -> {
-                    val count = decoder.readLength()
+                    val count = decoder.readCount()
                     Arr(List(count) { read(decoder) })
                 }
 

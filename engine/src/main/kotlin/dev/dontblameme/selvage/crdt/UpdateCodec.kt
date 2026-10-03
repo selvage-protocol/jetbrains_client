@@ -69,6 +69,9 @@ class UpdateDecoder(
 
     fun readLen() = rest.readLength()
 
+    /** A [readLen] that counts elements: see [Lib0Decoder.readCount]. */
+    fun readCount() = rest.readCount()
+
     fun readAny() = YAny.read(rest)
 
     fun readBuf() = rest.readVarUint8Array()

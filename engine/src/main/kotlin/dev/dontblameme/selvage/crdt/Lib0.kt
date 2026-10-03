@@ -120,6 +120,16 @@ class Lib0Decoder(
         return value.toInt()
     }
 
+    /**
+     * A count of elements that take a byte each at least: one past the bytes left cannot be
+     * read, so it is refused before anything is allocated for it.
+     */
+    fun readCount(): Int {
+        val count = readLength()
+        if (count > bytes.size - pos) throw DecodeException("unexpected end of array: $count elements")
+        return count
+    }
+
     /** Returns the value, and whether it was lib0's `-0` (a sign bit on a zero magnitude). */
     fun readVarIntWithSign(): Pair<Long, Boolean> {
         var r = readUint8()

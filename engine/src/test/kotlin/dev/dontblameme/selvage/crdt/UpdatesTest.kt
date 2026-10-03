@@ -258,6 +258,63 @@ class UpdatesTest {
         assertEquals(mapOf(9L to Int.MAX_VALUE.toLong()), doc.store.stateVector())
     }
 
+    /** Client 5's one item at the root "t", whose content is [ref] followed by [content]. */
+    private fun itemWith(
+        ref: Int,
+        content: Lib0Encoder.() -> Unit,
+    ): ByteArray =
+        Lib0Encoder()
+            .apply {
+                writeVarUint(1)
+                writeVarUint(1)
+                writeVarUint(5)
+                writeVarUint(0)
+                writeUint8(ref)
+                writeVarUint(1)
+                writeVarString("t")
+                content()
+                writeVarUint(0)
+            }.toByteArray()
+
+    @Test
+    fun a_count_past_the_bytes_left_is_refused_before_anything_is_allocated() {
+        val count = Int.MAX_VALUE.toLong()
+        val updates =
+            mapOf(
+                "json" to itemWith(Content.JSON) { writeVarUint(count) },
+                "any" to itemWith(Content.ANY) { writeVarUint(count) },
+                "array" to
+                    itemWith(Content.ANY) {
+                        writeVarUint(1)
+                        writeUint8(117)
+                        writeVarUint(count)
+                    },
+                "object" to
+                    itemWith(Content.ANY) {
+                        writeVarUint(1)
+                        writeUint8(118)
+                        writeVarUint(count)
+                    },
+            )
+        for ((name, update) in updates) {
+            val doc = Doc(1)
+            assertFailsWith<DecodeException>(name) { Updates.applyUpdate(doc, update) }
+            assertEquals(emptyMap<Long, Long>(), doc.store.stateVector(), name)
+        }
+        // A count the bytes left can hold is read as before.
+        val doc = Doc(1)
+        Updates.applyUpdate(
+            doc,
+            itemWith(Content.ANY) {
+                writeVarUint(1)
+                writeUint8(117)
+                writeVarUint(1)
+                writeUint8(120)
+            },
+        )
+        assertEquals(mapOf(5L to 1L), doc.store.stateVector())
+    }
+
     @Test
     fun the_delete_set_merges_adjacent_and_overlapping_ranges() {
         val ds = DeleteSet()

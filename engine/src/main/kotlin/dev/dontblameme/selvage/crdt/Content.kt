@@ -48,7 +48,7 @@ sealed class Content {
 
                 JSON -> {
                     ContentJson(
-                        List(decoder.readLen()) {
+                        List(decoder.readCount()) {
                             decoder.readString().let {
                                 if (it ==
                                     "undefined"
@@ -83,7 +83,7 @@ sealed class Content {
                 }
 
                 ANY -> {
-                    ContentAny(List(decoder.readLen()) { decoder.readAny() })
+                    ContentAny(List(decoder.readCount()) { decoder.readAny() })
                 }
 
                 DOC -> {
