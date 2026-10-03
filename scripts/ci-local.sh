@@ -4,7 +4,7 @@
 #
 #   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over this script
 #   scripts/ci-local.sh checks   # the engine's suite (with the differential test against real
-#                                # yjs), the live test against a real selvaged, the
+#                                # yjs), the live tests against a real selvaged, the
 #                                # specification's peer runner's own tests, its peer corpus and
 #                                # the corpus's mutation census, and the
 #                                # flake's sandboxed checks
@@ -14,8 +14,10 @@
 # `vscode_client/node_modules`, then `web_client/node_modules`; set SELVAGE_YJS_NODE_MODULES (or
 # the Gradle property selvage.yjsNodeModules) to point elsewhere. It fails when none is found.
 #
-# The live test spawns the selvaged SELVAGE_SELVAGED names and fails, saying so, without one. The
-# peer corpus reads the specification at SELVAGE_SPECIFICATION, by default the sibling checkout.
+# The live tests spawn the selvaged SELVAGE_SELVAGED names and fail, saying so, without one. The
+# cross-implementation live test also loads the TypeScript engine from the vscode_client checkout
+# SELVAGE_VSCODE_CLIENT names, by default the sibling one, whose packages `npm ci` has installed.
+# The peer corpus reads the specification at SELVAGE_SPECIFICATION, by default the sibling checkout.
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)

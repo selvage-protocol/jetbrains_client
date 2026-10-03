@@ -74,7 +74,7 @@
             touch $out
           '';
 
-          # The local gate and the differential driver parse, and the gate passes shellcheck.
+          # The local gate and the two Node drivers parse, and the gate passes shellcheck.
           scripts =
             pkgs.runCommand "jetbrains-client-scripts"
               {
@@ -86,6 +86,7 @@
               ''
                 shellcheck ${self}/scripts/ci-local.sh ${self}/scripts/run-peer-vectors.sh
                 node --check ${self}/engine/src/test/node/yjs-driver.mjs
+                node --check ${self}/engine/src/test/node/ts-peer.mjs
                 touch $out
               '';
 
