@@ -34,6 +34,22 @@ jobs:
           path: .ci/specification
           persist-credentials: false
 
+      # The server the live test spawns, at its published `main`, built with the runner's own
+      # stable Rust.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: selvage-protocol/reference_server
+          path: .ci/reference_server
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14.7"
+
+      # What the specification's peer runner seals and verifies frames with.
+      - name: install the peer runner's packages
+        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0
+
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
@@ -64,5 +80,32 @@ jobs:
 
       - name: the engine's suite
         run: ./gradlew --max-workers=4 --console=plain :engine:test
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: build selvaged
+        run: cargo build --locked --release -p selvaged
+        working-directory: .ci/reference_server
+        env:
+          CARGO_BUILD_JOBS: "4"
+
+      - name: the engine against a real selvaged
+        run: ./gradlew --max-workers=4 --console=plain :engine:liveTest
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+
+      - name: the specification's peer runner, by its own tests
+        run: scripts/run-peer-vectors.sh --self-test
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: the specification's peer corpus
+        run: scripts/run-peer-vectors.sh
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: the peer corpus's mutation census
+        run: scripts/run-peer-vectors.sh --mutation-census
         env:
           SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
