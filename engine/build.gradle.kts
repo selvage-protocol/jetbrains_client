@@ -17,14 +17,17 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
-// The differential test drives real yjs through Node, and the live test a real `selvaged`. Where
-// yjs lives, which Node runs it and which `selvaged` to spawn come from Gradle properties first,
-// then the environment; a test resolves the defaults and fails with the reason when one is missing.
+// The differential test drives real yjs through Node, the live tests a real `selvaged` and, for the
+// cross-implementation test, the TypeScript engine of a `vscode_client` checkout. Where yjs lives,
+// which Node runs it, which `selvaged` to spawn and which checkout to load come from Gradle
+// properties first, then the environment; a test resolves the defaults and fails with the reason
+// when one is missing.
 val passThrough =
     mapOf(
         "selvage.yjsNodeModules" to "SELVAGE_YJS_NODE_MODULES",
         "selvage.node" to "SELVAGE_NODE",
         "selvage.selvaged" to "SELVAGE_SELVAGED",
+        "selvage.vscodeClient" to "SELVAGE_VSCODE_CLIENT",
     )
 
 // The specification whose vectors the tests replay: the one named, else the sibling checkout.
