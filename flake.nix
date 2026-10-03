@@ -46,6 +46,12 @@
               t.python
             ];
             JAVA_HOME = t.jdk.home;
+            # The test IDE's runtime loads these when an editor lays out text, headless or not.
+            SELVAGE_TEST_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.freetype
+              pkgs.fontconfig
+              pkgs.zlib
+            ];
             SELVAGE_NODE = "${t.node}/bin/node";
             # Temporary files stay in the checkout: the JVM ignores TMPDIR, so it is told as well.
             shellHook = ''
