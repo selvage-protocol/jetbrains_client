@@ -106,10 +106,14 @@ class RelativePositionTest {
         // An element the replica has not seen does not resolve yet.
         assertNull(RelativePosition(null, path, ID(5, 99)).resolve(doc, path))
         assertNull(RelativePosition(null, path, ID(77, 0)).resolve(doc, path))
-        // A scope alone is an end of the text, and an unknown text is empty and stays absent.
+        // A scope alone is an end of the text.
         assertEquals(3, RelativePosition(null, path, null, 0).resolve(doc, path))
         assertEquals(0, RelativePosition(null, path, null, -1).resolve(doc, path))
-        assertEquals(0, RelativePosition(null, "src/new.rs", null, 0).resolve(doc, "src/new.rs"))
+        // §8.1.1: a replica with no text at the path resolves no anchor, a scope alone included,
+        // and does not create the text to try.
+        for (assoc in listOf(0, -1)) {
+            assertNull(RelativePosition(null, "src/new.rs", null, assoc).resolve(doc, "src/new.rs"))
+        }
         assertFalse("src/new.rs" in doc.rootNames)
     }
 }

@@ -26,7 +26,8 @@ data class RelativePosition(
 
     /**
      * The UTF-16 offset this position denotes in the text named [path] of [doc], by the rules of
-     * the protocol's §8.1.1; null when it does not resolve there.
+     * the protocol's §8.1.1; null when it does not resolve there, which includes a [doc] holding no
+     * text at [path] (the text is not created to resolve one).
      */
     fun resolve(
         doc: Doc,
@@ -34,6 +35,7 @@ data class RelativePosition(
     ): Int? {
         if (type != null) return null
         if (tname != null && tname != path) return null
+        if (path !in doc.rootNames) return null
         val store = doc.store
         if (item != null) {
             if (store.getState(item.client) <= item.clock) return null
@@ -57,8 +59,8 @@ data class RelativePosition(
             return index
         }
         if (tname == null) return null
-        // A scope alone names an end of the text; a text not yet in the replica is empty.
-        if (assoc < 0 || path !in doc.rootNames) return 0
+        // A scope alone names an end of the text.
+        if (assoc < 0) return 0
         return doc.get(path).length
     }
 
