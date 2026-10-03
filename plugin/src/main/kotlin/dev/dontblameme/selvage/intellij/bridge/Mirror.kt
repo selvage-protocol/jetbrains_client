@@ -1,0 +1,248 @@
+package dev.dontblameme.selvage.intellij.bridge
+
+import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.Locale
+import java.util.UUID
+
+/**
+ * A guest's mirror (`DESIGN.md` §4.2): the room's listing as a real directory, so code insight works
+ * on ordinary paths. A cache of the room, never a source of truth: an empty file per listed path,
+ * filled when a document is fetched, gone when the session is left. Ported from
+ * `vscode_client/src/adapter/mirror.ts`; the marker is the same file.
+ */
+class Mirror private constructor(
+    val room: String,
+    val window: String,
+    val root: Path,
+) {
+    data class Report(
+        val mirrored: List<String>,
+        val refused: List<String>,
+        val withheld: List<String>,
+        val overCapacity: List<String>,
+        val removed: List<String> = emptyList(),
+    )
+
+    /** Whether [path] is one this mirror would hold a document at. */
+    fun accepts(path: String): Boolean = Grant.isGrantedPath(path) && path != MARKER && !isWorkspaceConfigPath(path)
+
+    /** The file a room path lives at, or null for a path this mirror refuses. */
+    fun fileOf(path: String): Path? = if (accepts(path)) root.resolve(path.split('/').joinToString("/")) else null
+
+    /** Writes one empty file per listed path, with the directories on the way, never through a link. */
+    fun materialise(listing: List<String>): Report {
+        val mirrored = ArrayList<String>()
+        val refused = ArrayList<String>()
+        val withheld = ArrayList<String>()
+        val overCapacity = ArrayList<String>()
+        listing.forEachIndexed { index, path ->
+            when {
+                index >= Grant.MAX_GRANT_PATHS -> overCapacity.add(path)
+                !Grant.isGrantedPath(path) || path == MARKER -> refused.add(path)
+                isWorkspaceConfigPath(path) -> withheld.add(path)
+                materialiseOne(path) -> mirrored.add(path)
+                else -> refused.add(path)
+            }
+        }
+        return Report(mirrored, refused, withheld, overCapacity)
+    }
+
+    /** A republished listing: materialise, then remove what it no longer names unless [held] keeps it. */
+    fun republish(
+        listing: List<String>,
+        held: (String) -> Boolean,
+    ): Report {
+        val applied = materialise(listing)
+        val keep = listing.toHashSet()
+        val removed = ArrayList<String>()
+        for (relative in filesUnder()) {
+            if (relative == MARKER || relative in keep || held(relative) || isWorkspaceConfigPath(relative)) continue
+            try {
+                Files.deleteIfExists(root.resolve(relative))
+                removed.add(relative)
+            } catch (e: IOException) {
+                continue
+            }
+        }
+        return applied.copy(removed = removed)
+    }
+
+    /** Whether [path] resolves under the root through plain directories only, to a plain file or nothing. */
+    fun plainPath(path: String): Boolean {
+        val segments = path.split('/')
+        var dir = root
+        for (segment in segments.dropLast(1)) {
+            dir = dir.resolve(segment)
+            val attributes = attributes(dir) ?: continue
+            if (!attributes.isDirectory || attributes.isSymbolicLink) return false
+        }
+        val leaf = attributes(dir.resolve(segments.last())) ?: return true
+        return leaf.isRegularFile && !leaf.isSymbolicLink
+    }
+
+    /** Writes the room's text into the mirror file, refusing a path that leaves the mirror through a link. */
+    fun write(
+        path: String,
+        text: String,
+    ): Boolean {
+        if (!accepts(path) || !plainPath(path) || !materialiseOne(path)) return false
+        return try {
+            Files.write(
+                root.resolve(path),
+                text.toByteArray(Charsets.UTF_8),
+                StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                LinkOption.NOFOLLOW_LINKS,
+            )
+            true
+        } catch (e: IOException) {
+            false
+        }
+    }
+
+    fun remove() {
+        root.toFile().deleteRecursively()
+    }
+
+    private fun materialiseOne(path: String): Boolean {
+        val segments = path.split('/')
+        var dir = root
+        for (segment in segments.dropLast(1)) {
+            dir = dir.resolve(segment)
+            val attributes = attributes(dir)
+            if (attributes == null) {
+                try {
+                    Files.createDirectory(dir)
+                } catch (e: IOException) {
+                    if (!isPlainDirectory(dir)) return false
+                }
+            } else if (!attributes.isDirectory || attributes.isSymbolicLink) {
+                return false
+            }
+        }
+        val file = dir.resolve(segments.last())
+        val existing = attributes(file)
+        if (existing != null) return existing.isRegularFile && !existing.isSymbolicLink
+        return try {
+            Files
+                .newByteChannel(
+                    file,
+                    setOf(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, LinkOption.NOFOLLOW_LINKS),
+                ).close()
+            true
+        } catch (e: FileAlreadyExistsException) {
+            isPlainFile(file)
+        } catch (e: IOException) {
+            false
+        }
+    }
+
+    private fun filesUnder(): List<String> {
+        val found = ArrayList<String>()
+
+        fun walk(dir: Path) {
+            val children =
+                try {
+                    Files.newDirectoryStream(dir).use { it.toList() }
+                } catch (e: IOException) {
+                    return
+                }
+            for (child in children) {
+                val attributes = attributes(child) ?: continue
+                if (attributes.isDirectory && !attributes.isSymbolicLink) {
+                    walk(child)
+                } else if (attributes.isRegularFile) {
+                    found.add(root.relativize(child).joinToString("/"))
+                }
+            }
+        }
+        walk(root)
+        return found
+    }
+
+    companion object {
+        const val MARKER = ".selvage-mirror.json"
+
+        /** A room id as one path segment, the way the other clients' mirrors name it. */
+        fun sanitiseRoom(room: String): String = room.replace(Regex("[^A-Za-z0-9_-]"), "-")
+
+        /**
+         * Whether a room path names what IntelliJ reads as the project's own configuration: anything under
+         * `.idea`, or a module, project or workspace file. The mirror is opened as a project, and a host's
+         * text there would be applied (run configurations included) rather than shown, so it is withheld.
+         */
+        fun isWorkspaceConfigPath(path: String): Boolean {
+            val segments = path.split('/').map { it.lowercase(Locale.ROOT).replace(Regex("[. ]+$"), "") }
+            val leaf = segments.size - 1
+            return segments.withIndex().any { (index, segment) ->
+                (index < leaf && segment == ".idea") ||
+                    (
+                        index == leaf && (
+                            segment.endsWith(
+                                ".iml",
+                            ) || segment.endsWith(".ipr") || segment.endsWith(".iws")
+                        )
+                    )
+            }
+        }
+
+        /** Mints `<storage>/rooms/<room>/<window>/` and its marker, refusing to mint through a link. */
+        fun mint(
+            storage: Path,
+            room: String,
+            window: String = UUID.randomUUID().toString(),
+        ): Mirror {
+            val segment = sanitiseRoom(room)
+            require(segment.isNotEmpty()) { "cannot mirror a room with no name in it" }
+            val rooms = storage.resolve("rooms")
+            val roomDir = rooms.resolve(segment)
+            val root = roomDir.resolve(window)
+            for (dir in listOf(storage, rooms, roomDir, root)) {
+                val attributes = attributes(dir) ?: continue
+                if (!attributes.isDirectory || attributes.isSymbolicLink) {
+                    throw IOException("refusing to mirror under $dir: not a plain directory")
+                }
+            }
+            Files.createDirectories(root)
+            val marker =
+                "{\"room\":${jsonString(
+                    room,
+                )},\"window\":${jsonString(window)},\"pid\":${ProcessHandle.current().pid()}}\n"
+            Files.writeString(root.resolve(MARKER), marker)
+            return Mirror(room, window, root)
+        }
+
+        private fun jsonString(text: String): String =
+            buildString {
+                append('"')
+                for (c in text) {
+                    when {
+                        c == '"' -> append("\\\"")
+                        c == '\\' -> append("\\\\")
+                        c < ' ' -> append("\\u%04x".format(c.code))
+                        else -> append(c)
+                    }
+                }
+                append('"')
+            }
+
+        private fun attributes(path: Path): BasicFileAttributes? =
+            try {
+                Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            } catch (e: IOException) {
+                null
+            }
+
+        private fun isPlainDirectory(path: Path): Boolean =
+            attributes(path)?.let { it.isDirectory && !it.isSymbolicLink } ?: false
+
+        private fun isPlainFile(path: Path): Boolean =
+            attributes(path)?.let { it.isRegularFile && !it.isSymbolicLink } ?: false
+    }
+}
