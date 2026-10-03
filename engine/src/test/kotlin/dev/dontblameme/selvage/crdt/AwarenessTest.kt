@@ -99,9 +99,15 @@ class AwarenessTest {
                     writeVarUint(4)
                     writeVarString("null")
                 }.toByteArray()
+        val updates = ArrayList<Seen>()
+        a.onUpdate { c, o -> updates.add(Seen(c, o)) }
         a.applyUpdate(removal, "remote")
         assertEquals(YAny.Obj.of(), a.localState)
         assertEquals(5L, a.meta[5]!!.clock)
+        // As in y-protocols, the local client is reported removed: a provider re-sends the clients
+        // an update names, and that re-send is what tells the peers the state is still here.
+        assertEquals(listOf(Seen(AwarenessChange(emptyList(), emptyList(), listOf(5)), "remote")), updates)
+        assertEquals("010505027b7d", a.encodeUpdate(updates.single().change.removed).toHex())
     }
 
     @Test
