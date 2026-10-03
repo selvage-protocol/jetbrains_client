@@ -1,7 +1,12 @@
 package dev.dontblameme.selvage.peer
 
+import dev.dontblameme.selvage.crdt.Lib0Decoder
+import dev.dontblameme.selvage.crdt.Sync
+import dev.dontblameme.selvage.crdt.SyncMessage
 import dev.dontblameme.selvage.crdt.TextDelta
+import dev.dontblameme.selvage.sealed.Envelope
 import dev.dontblameme.selvage.sealed.FrameCrypto
+import dev.dontblameme.selvage.sealed.Frames
 import dev.dontblameme.selvage.sealed.Role
 import dev.dontblameme.selvage.sealed.SessionKey
 import kotlin.test.Test
@@ -20,6 +25,9 @@ private class Room(
     val keepalive = Keepalive(pingIntervalMs = 30_000, awarenessRenewMs = 300, awarenessExpireMs = 900)
     var clock = 0L
     val seats = LinkedHashMap<String, PeerSession>()
+
+    /** Every frame relayed, with the session that sent it. */
+    val relayed = ArrayList<Pair<PeerSession, ByteArray>>()
 
     val host: PeerSession =
         PeerSession(
@@ -59,6 +67,7 @@ private class Room(
             for ((seat, from) in seats.entries.toList()) {
                 for (frame in from.takeOutbound()) {
                     moved = true
+                    relayed.add(from to frame)
                     for ((other, to) in seats) if (other != seat) to.deliver(clock, frame)
                 }
             }
@@ -72,6 +81,24 @@ private class Room(
         clock += ms
         for (peer in seats.values) peer.tick(clock)
         settle()
+    }
+}
+
+/** The `(client id, clock)` of every awareness entry in [frames], in the order they were sent. */
+private fun Room.awarenessEntries(frames: List<ByteArray>): List<Pair<Long, Long>> {
+    val frameKey = Frames.frameKey(roomId, roomKey)
+    return frames.flatMap { frame ->
+        val envelope = Envelope.parse(frame) ?: error("a frame the room cannot parse")
+        if (envelope.kind != 0L) return@flatMap emptyList()
+        val plaintext = Frames.opens(roomId, frameKey, envelope) ?: error("a frame the room cannot open")
+        Sync.decode(plaintext).filterIsInstance<SyncMessage.Awareness>().flatMap { message ->
+            val decoder = Lib0Decoder(message.update)
+            List(decoder.readVarUint().toInt()) {
+                val entry = decoder.readVarUint() to decoder.readVarUint()
+                decoder.readVarString()
+                entry
+            }
+        }
     }
 }
 
@@ -261,5 +288,43 @@ class PeerSessionTest {
         room.host.listingChanged(room.clock)
         room.settle()
         assertEquals(listOf("../out", "a.txt", "b.txt"), guest.listing)
+    }
+
+    @Test
+    fun `a first awareness state for an id is published above clock 0, after a re-seat too`() {
+        val room = Room()
+        val guest = room.join("p-guest")
+        room.settle()
+        room.host.insert("README.md", 0, "abcdef")
+        room.settle()
+        room.host.setCursor("README.md", Selection(0, 0))
+        guest.setCursor("README.md", Selection(1, 1))
+        room.settle()
+        val before = guest.awarenessClientId
+        val after = if (before == 7L) 8L else 7L
+        room.leave("p-guest")
+        guest.detach()
+        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), after)
+        for (other in room.seats.values) other.seatJoined(room.clock, "p-guest-2")
+        room.seats["p-guest-2"] = guest
+        room.advance(0)
+        room.advance(300)
+        assertEquals(Role.GUEST, guest.ownRole())
+        guest.setCursor("README.md", Selection(2, 2))
+        room.settle()
+
+        // §8.2: y-protocols ignores a first entry for an id at clock 0, so none is ever sent.
+        for ((sender, id) in listOf(room.host to room.host.awarenessClientId, guest to before, guest to after)) {
+            val entries = room.awarenessEntries(room.relayed.filter { it.first === sender }.map { it.second })
+            val first = entries.firstOrNull { it.first == id } ?: error("no awareness entry for $id in $entries")
+            assertTrue(first.second > 0, "the first entry for $id is at clock ${first.second}")
+        }
+        assertEquals(
+            Selection(2, 2),
+            room.host
+                .cursors()
+                .single { it.clientId == after }
+                .selection,
+        )
     }
 }
