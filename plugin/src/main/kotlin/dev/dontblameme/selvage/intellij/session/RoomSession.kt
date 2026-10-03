@@ -129,6 +129,22 @@ class RoomSession(
                     override fun divergence(path: String) {
                         Notifier.warn(project, Say.divergence(path))
                     }
+
+                    override fun saveFailed(
+                        path: String,
+                        why: String?,
+                    ) {
+                        Notifier.error(
+                            project,
+                            if (why ==
+                                null
+                            ) {
+                                Say.saveFailed(path)
+                            } else {
+                                Say.saveFailedBecause(path, why)
+                            },
+                        )
+                    }
                 },
                 this,
                 autoSave = { settings.autoSave },
@@ -406,11 +422,17 @@ class RoomSession(
         statusAlarm.cancelAllRequests()
     }
 
+    /**
+     * §13.4, §13.9: a viewer's documents are read-only, which is how this editor refuses a keystroke
+     * the room would not take, and the reason is said once. The role is the applied state's word and
+     * can arrive after the join, so it is read again on every event.
+     */
     private fun sayViewerOnce() {
-        if (viewerSaid || isHost || engine.ownRole() != Role.VIEWER) return
+        val viewer = !isHost && engine.ownRole() == Role.VIEWER
+        sync.viewer = viewer
+        if (viewerSaid || !viewer) return
         viewerSaid = true
-        for (path in sync.paths()) sync.documentOf(path)?.setReadOnly(true)
-        Notifier.info(project, Say.viewerReadOnly())
+        Notifier.warn(project, Say.viewerReadOnly())
     }
 
     // --- documents ----------------------------------------------------------------------------
@@ -461,7 +483,6 @@ class RoomSession(
             return
         }
         sync.bind(path, document, seed = false)
-        if (engine.ownRole() == Role.VIEWER) document.setReadOnly(true)
     }
 
     private fun arrive(path: String) {
@@ -476,7 +497,6 @@ class RoomSession(
         if (FileEditorManager.getInstance(project).isFileOpen(file)) return
         if (path in fetchedOnly) return
         waitingForText.remove(path)
-        sync.documentOf(path)?.let { if (engine.ownRole() == Role.VIEWER) it.setReadOnly(false) }
         sync.unbind(path)
     }
 
@@ -896,9 +916,7 @@ class RoomSession(
         leaving = true
         stopEngine()
         presence.clear()
-        for (path in sync.paths()) {
-            if (engine.ownRole() == Role.VIEWER) sync.documentOf(path)?.setReadOnly(false)
-        }
+        sync.viewer = false
         engine.leave()
         if (mirror != null && !keepMirror) {
             val files = FileEditorManager.getInstance(project).openFiles

@@ -223,6 +223,133 @@ class DocumentSyncTest : BasePlatformTestCase() {
         assertEquals("the file on disk keeps CRLF", "one\r\nmiddle\r\ntwo\r\n", Files.readString(path))
     }
 
+    /** What a sync reported, in order. */
+    private class Recorded : DocumentSync.Reports {
+        val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        override fun applyRefused(path: String) {
+            said.add("applyRefused $path")
+        }
+
+        override fun saveFailed(
+            path: String,
+            why: String?,
+        ) {
+            said.add("saveFailed $path ${why ?: "-"}")
+        }
+    }
+
+    private fun onDisk(
+        name: String,
+        text: String,
+    ): Pair<java.nio.file.Path, Document> {
+        val dir = Files.createTempDirectory("saves")
+        val path = dir.resolve(name)
+        Files.writeString(path, text)
+        val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)!!
+        return path to FileDocumentManager.getInstance().getDocument(file)!!
+    }
+
+    private fun eventually(
+        what: String,
+        condition: () -> Boolean,
+    ) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (!condition()) {
+            if (System.nanoTime() > deadline) fail("not within 5 s: $what")
+            settle()
+            java.util.concurrent.locks.LockSupport
+                .parkNanos(10_000_000L)
+        }
+    }
+
+    fun testAViewersDocumentIsReadOnlyAndTheRoomStillWritesIt() {
+        val reports = Recorded()
+        val viewing = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { false })
+        replica.texts["a.txt"] = "hello\n"
+        val document = document("")
+        viewing.viewer = true
+        viewing.bind("a.txt", document, seed = false)
+        assertEquals("hello\n", document.text)
+        assertFalse("a viewer's document refuses a keystroke", document.isWritable)
+        viewing.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "!"))
+        settle()
+        assertEquals("the room's edit is written all the same", "hello!\n", document.text)
+        assertFalse("and the document stays read-only", document.isWritable)
+        assertEquals(emptyList<String>(), reports.said)
+        viewing.unbind("a.txt")
+        assertTrue("the document is given back writable", document.isWritable)
+    }
+
+    fun testARoleThatBecomesViewerLocksTheBoundDocuments() {
+        val viewing = DocumentSync(project, replica, Recorded(), testRootDisposable, autoSave = { false })
+        val document = document("hello\n")
+        viewing.bind("a.txt", document, seed = true)
+        assertTrue(document.isWritable)
+        viewing.viewer = true
+        assertFalse(document.isWritable)
+        viewing.viewer = false
+        assertTrue(document.isWritable)
+    }
+
+    fun testEachDocumentIsSavedOnItsOwnClock() {
+        val saving =
+            DocumentSync(project, replica, Recorded(), testRootDisposable, autoSave = { true }, saveSettleMs = 50)
+        val (_, first) = onDisk("first.txt", "one\n")
+        val (_, second) = onDisk("second.txt", "two\n")
+        saving.bind("first.txt", first, seed = true)
+        saving.bind("second.txt", second, seed = true)
+        saving.remoteEdit("first.txt", replica.remote("first.txt", 0, 0, "1 "))
+        settle()
+        saving.remoteEdit("second.txt", replica.remote("second.txt", 0, 0, "2 "))
+        settle()
+        val manager = FileDocumentManager.getInstance()
+        eventually("both documents are written") {
+            !manager.isDocumentUnsaved(first) &&
+                !manager.isDocumentUnsaved(second)
+        }
+    }
+
+    fun testASaveToAFileThatTurnedReadOnlyIsSaidWithItsCause() {
+        val reports = Recorded()
+        val saving =
+            DocumentSync(project, replica, reports, testRootDisposable, autoSave = { true }, saveSettleMs = 500)
+        val (_, document) = onDisk("locked.txt", "text\n")
+        saving.bind("locked.txt", document, seed = true)
+        saving.remoteEdit("locked.txt", replica.remote("locked.txt", 0, 0, "more "))
+        settle()
+        assertEquals("more text\n", document.text)
+        val file = FileDocumentManager.getInstance().getFile(document)!!
+        WriteCommandAction.runWriteCommandAction(project) { file.isWritable = false }
+        try {
+            eventually("the failed save is said: ${reports.said}") { reports.said.isNotEmpty() }
+            assertEquals(listOf("saveFailed locked.txt the file is read-only"), reports.said)
+        } finally {
+            WriteCommandAction.runWriteCommandAction(project) { file.isWritable = true }
+        }
+    }
+
+    fun testASaveTheIdeHoldsBackIsSaid() {
+        val reports = Recorded()
+        val saving = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { true }, saveSettleMs = 50)
+        val (_, document) = onDisk("vetoed.txt", "text\n")
+        com.intellij.openapi.fileEditor.FileDocumentSynchronizationVetoer.EP_NAME.point.registerExtension(
+            object : com.intellij.openapi.fileEditor.FileDocumentSynchronizationVetoer() {
+                override fun maySaveDocument(
+                    document: Document,
+                    isSaveExplicit: Boolean,
+                ): Boolean = false
+            },
+            testRootDisposable,
+        )
+        saving.bind("vetoed.txt", document, seed = true)
+        saving.remoteEdit("vetoed.txt", replica.remote("vetoed.txt", 0, 0, "more "))
+        settle()
+        eventually("the held-back save is said: ${reports.said}") { reports.said.isNotEmpty() }
+        assertEquals(listOf("saveFailed vetoed.txt -"), reports.said)
+        assertTrue(FileDocumentManager.getInstance().isDocumentUnsaved(document))
+    }
+
     override fun tearDown() {
         try {
             super.tearDown()

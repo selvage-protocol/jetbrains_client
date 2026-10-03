@@ -61,6 +61,12 @@ class DocumentSync(
         fun applyRefused(path: String) {}
 
         fun divergence(path: String) {}
+
+        /** The document's file could not be written; [why] when the editor said. */
+        fun saveFailed(
+            path: String,
+            why: String?,
+        ) {}
     }
 
     private class Bound(
@@ -72,12 +78,27 @@ class DocumentSync(
         val pending = ArrayList<TextChange>()
         val remote = ArrayList<List<TextDelta>>()
         var syncQueued = false
+
+        /** Made read-only by this sync because the session is a viewer's, and given back when unbound. */
+        var locked = false
     }
 
     private val bound = HashMap<String, Bound>()
     private val byDocument = HashMap<Document, Bound>()
     private val saveAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
+    private val saves = HashMap<String, Runnable>()
     private var disposed = false
+
+    /**
+     * A viewer's session (§13.9): every bound document is read-only, the editor's own way of refusing
+     * a keystroke, while the room's edits are still written into it.
+     */
+    var viewer = false
+        set(value) {
+            if (field == value) return
+            field = value
+            bound.values.forEach { lock(it, value) }
+        }
 
     /** Off in a test that shows an unguarded editor would echo the room's edits back to it. */
     internal var echoGuard = true
@@ -123,6 +144,7 @@ class DocumentSync(
         val entry = Bound(path, document, replica.text(path))
         bound[path] = entry
         byDocument[document] = entry
+        if (viewer) lock(entry, true)
         if (seed && !replica.has(path)) {
             val text = document.text
             if (replica.replaceIf(path, "", 0, 0, text)) entry.shadow = text
@@ -134,7 +156,19 @@ class DocumentSync(
     fun unbind(path: String) {
         val entry = bound.remove(path) ?: return
         byDocument.remove(entry.document)
+        cancelSave(path)
+        lock(entry, false)
         replica.release(path)
+    }
+
+    private fun lock(
+        entry: Bound,
+        on: Boolean,
+    ) {
+        if (on == entry.locked) return
+        if (on && !entry.document.isWritable) return
+        entry.locked = on
+        entry.document.setReadOnly(on)
     }
 
     /** The room changed [path]: the deltas are applied in order where they still describe the text. */
@@ -162,6 +196,7 @@ class DocumentSync(
     ) {
         if (echoGuard && entry.applying > 0) return
         reports.localEdit(entry.path)
+        moveSave(entry)
         val change = TextChange(event.offset, event.offset + event.oldLength, event.newFragment.toString())
         // §7: a client writes whole code points. An edit whose boundary falls inside a character is
         // left to the sync, whose diff widens it, and one that would write half a character is refused.
@@ -299,11 +334,13 @@ class DocumentSync(
         changes: List<TextChange>,
     ) {
         val document = entry.document
-        if (!document.isWritable) {
+        if (!document.isWritable && !entry.locked) {
             reports.applyRefused(entry.path)
             return
         }
         entry.applying += 1
+        // The viewer's lock refuses the person's keystrokes, not the room's own text.
+        if (entry.locked) document.setReadOnly(false)
         try {
             WriteCommandAction
                 .writeCommandAction(project)
@@ -312,21 +349,59 @@ class DocumentSync(
                     for (change in changes) document.replaceString(change.start, change.end, change.text)
                 }
         } finally {
+            if (entry.locked) document.setReadOnly(true)
             entry.applying -= 1
         }
     }
 
+    /** Each document is written once the room's edits to it settle, on its own clock. */
     private fun scheduleSave(entry: Bound) {
-        saveAlarm.cancelAllRequests()
-        saveAlarm.addRequest({
-            if (bound[entry.path] === entry) FileDocumentManager.getInstance().saveDocument(entry.document)
-        }, saveSettleMs)
+        cancelSave(entry.path)
+        val request =
+            Runnable {
+                saves.remove(entry.path)
+                if (bound[entry.path] === entry) save(entry)
+            }
+        saves[entry.path] = request
+        saveAlarm.addRequest(request, saveSettleMs)
+    }
+
+    /** A keystroke inside the settle window moves the write rather than racing it. */
+    private fun moveSave(entry: Bound) {
+        if (entry.path in saves) scheduleSave(entry)
+    }
+
+    private fun cancelSave(path: String) {
+        saves.remove(path)?.let { saveAlarm.cancelRequest(it) }
+    }
+
+    /**
+     * Writes the document. The IDE says a failed write in its own dialog and keeps the document
+     * unsaved, so the room's sentence is said when it is still unsaved afterwards; the cause is
+     * known only when the write refuses outright or the IDE hands the failure back.
+     */
+    private fun save(entry: Bound) {
+        val manager = FileDocumentManager.getInstance()
+        val file = manager.getFile(entry.document)
+        if (file != null && !file.isWritable) {
+            reports.saveFailed(entry.path, "the file is read-only")
+            return
+        }
+        try {
+            manager.saveDocument(entry.document)
+        } catch (e: RuntimeException) {
+            reports.saveFailed(entry.path, (e.cause ?: e).message ?: e.toString())
+            return
+        }
+        if (manager.isDocumentUnsaved(entry.document)) reports.saveFailed(entry.path, null)
     }
 
     override fun dispose() {
         disposed = true
+        bound.values.forEach { lock(it, false) }
         bound.clear()
         byDocument.clear()
+        saves.clear()
     }
 
     companion object {
