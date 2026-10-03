@@ -276,6 +276,28 @@ class SelvageSession private constructor(
         length: Int,
     ): Boolean = locked { (peer?.delete(path, index, length) ?: false).also { afterChange() } }
 
+    /**
+     * Replaces `[index, index + length)` of [path] with [text], but only while the replica still reads
+     * [expected]: an editor's change is computed against the text it last saw, and a remote edit that
+     * landed since would put it at the wrong offset. False when the replica moved, or when there is
+     * no session; the edit is then not made.
+     */
+    fun replaceIf(
+        path: String,
+        expected: String,
+        index: Int,
+        length: Int,
+        text: String,
+    ): Boolean =
+        locked {
+            val session = peer ?: return@locked false
+            if (session.text(path) != expected) return@locked false
+            if (length > 0) session.delete(path, index, length)
+            if (text.isNotEmpty() || !session.has(path)) session.insert(path, index, text)
+            afterChange()
+            true
+        }
+
     fun setCursor(
         path: String?,
         selection: Selection? = null,
