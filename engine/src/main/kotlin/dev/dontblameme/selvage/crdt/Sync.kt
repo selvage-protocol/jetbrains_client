@@ -96,18 +96,28 @@ object Sync {
      * above 3 or a `sync_type` above 2 has no length to read past, so reading stops there and the
      * messages before it stand. Throws [DecodeException] when a defined message is truncated.
      */
-    fun decode(frame: ByteArray): List<SyncMessage> {
+    fun decode(frame: ByteArray): List<SyncMessage> = ArrayList<SyncMessage>().also { out -> read(frame) { out += it } }
+
+    /**
+     * [decode]'s walk, one message at a time: [visit] sees each message before the next is read,
+     * so a frame truncated inside a later message has shown the ones before it when
+     * [DecodeException] is thrown. The applier and `CANONICAL.md` §6.1 step 10 both read a frame
+     * through this one walk, so they cannot disagree about where a message ends.
+     */
+    fun read(
+        frame: ByteArray,
+        visit: (SyncMessage) -> Unit,
+    ) {
         val decoder = Lib0Decoder(frame)
-        val messages = ArrayList<SyncMessage>()
         while (decoder.hasContent()) {
-            messages +=
+            val message =
                 when (decoder.readVarUint()) {
                     MESSAGE_SYNC -> {
                         when (decoder.readVarUint()) {
                             SYNC_STEP1 -> SyncMessage.Step1(decoder.readVarUint8Array())
                             SYNC_STEP2 -> SyncMessage.Step2(decoder.readVarUint8Array())
                             SYNC_UPDATE -> SyncMessage.Update(decoder.readVarUint8Array())
-                            else -> return messages
+                            else -> return
                         }
                     }
 
@@ -125,10 +135,10 @@ object Sync {
                     }
 
                     else -> {
-                        return messages
+                        return
                     }
                 }
+            visit(message)
         }
-        return messages
     }
 }

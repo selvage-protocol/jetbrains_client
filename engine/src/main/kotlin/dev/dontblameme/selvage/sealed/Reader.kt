@@ -1,6 +1,8 @@
 package dev.dontblameme.selvage.sealed
 
-import dev.dontblameme.selvage.crdt.Lib0Decoder
+import dev.dontblameme.selvage.crdt.DecodeException
+import dev.dontblameme.selvage.crdt.Sync
+import dev.dontblameme.selvage.crdt.SyncMessage
 
 /** §6.1's local report for a refused frame, in the table's order. */
 enum class DropReason(
@@ -183,32 +185,15 @@ class Reader(
     companion object {
         /**
          * Whether a `kind = 0` plaintext carries document content: a SyncStep2 or an Update
-         * anywhere in its stream, not only in its first message (§6.1 step 10).
+         * anywhere in its stream, not only in its first message (§6.1 step 10). The walk is
+         * [Sync.read], the one the applier reads the frame with; where it stops at a truncated
+         * message, what it has already seen is what the frame carries.
          */
         fun isContent(plaintext: ByteArray): Boolean {
-            val decoder = Lib0Decoder(plaintext)
             var content = false
             try {
-                while (decoder.hasContent()) {
-                    when (decoder.readVarUint()) {
-                        0L -> {
-                            val subtype = decoder.readVarUint()
-                            content = content || subtype == 1L || subtype == 2L
-                            decoder.readVarUint8Array()
-                        }
-
-                        1L, 2L -> {
-                            decoder.readVarUint8Array()
-                        }
-
-                        3L -> {}
-
-                        else -> {
-                            break
-                        }
-                    }
-                }
-            } catch (e: RuntimeException) {
+                Sync.read(plaintext) { if (it is SyncMessage.Step2 || it is SyncMessage.Update) content = true }
+            } catch (e: DecodeException) {
                 return content
             }
             return content

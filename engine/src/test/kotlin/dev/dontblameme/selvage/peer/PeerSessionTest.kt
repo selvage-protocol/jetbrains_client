@@ -1,9 +1,12 @@
 package dev.dontblameme.selvage.peer
 
+import dev.dontblameme.selvage.crdt.Doc
 import dev.dontblameme.selvage.crdt.Lib0Decoder
 import dev.dontblameme.selvage.crdt.Sync
 import dev.dontblameme.selvage.crdt.SyncMessage
 import dev.dontblameme.selvage.crdt.TextDelta
+import dev.dontblameme.selvage.crdt.Updates
+import dev.dontblameme.selvage.sealed.DropReason
 import dev.dontblameme.selvage.sealed.Envelope
 import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Frames
@@ -164,6 +167,24 @@ class PeerSessionTest {
         assertFalse(viewer.insert("README.md", 0, "nope"))
         room.settle()
         assertFalse(room.host.has("README.md"))
+    }
+
+    @Test
+    fun `a viewer's update behind an auth message is refused, not applied`() {
+        val room = Room()
+        val viewer = room.join("p-viewer", Role.VIEWER)
+        val guest = room.join("p-guest")
+        room.settle()
+        val update = Updates.encodeStateAsUpdate(Doc(7).also { it.getText("README.md").insert(0, "viewer text") })
+        // `02 01` is an auth message of status 1, which carries no reason (§7), then an Update.
+        val plaintext = byteArrayOf(2, 1) + Sync.encode(SyncMessage.Update(update))
+        assertEquals(listOf(0x02, 0x01, 0x00, 0x02), plaintext.take(4).map { it.toInt() })
+        val frameKey = Frames.frameKey(room.roomId, room.roomKey)
+        val frame = Frames.seal(room.roomId, frameKey, 0, 1_000, viewer.sessionKey, plaintext)
+        for (receiver in listOf(room.host, guest)) {
+            assertEquals(Outcome.Dropped(DropReason.UNAUTHORISED_CONTENT), receiver.deliver(room.clock, frame))
+            assertFalse(receiver.has("README.md"))
+        }
     }
 
     @Test
