@@ -9,16 +9,14 @@ import java.nio.file.DirectoryStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.SecureDirectoryStream
 import java.nio.file.StandardOpenOption
-import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * The folder a host shares, read on a peer's behalf (`DESIGN.md` §4.2). A path a peer names is
  * untrusted: it must pass [Grant.isGrantedPath], and it is then resolved one segment at a time,
- * each inside the directory the step before it opened, never following a link. A link, a directory
- * where a file was expected, or a name that is only a case-folded match is refused rather than read.
+ * never following a link. A link, a directory where a file was expected, or a name that is only a
+ * case-folded match is refused rather than read.
  */
 class GrantFolder(
     val root: Path,
@@ -36,154 +34,29 @@ class GrantFolder(
         ) : Read
     }
 
-    /** The text a peer may be given for [path], LF-only, or why there is none. */
+    /**
+     * The text a peer may be given for [path], LF-only, or why there is none.
+     *
+     * Each segment is checked with links not followed (`lstat`), the leaf is opened with `O_NOFOLLOW`,
+     * and the file read is then required to lie under the folder's real path. The IDE installs its own
+     * default filesystem provider, which offers no `SecureDirectoryStream`, so the steps cannot be
+     * resolved inside the descriptor the step before opened. A residual: a directory on the path
+     * swapped for a link between its check and the open can be followed for that one read, and the
+     * containment check after the read narrows that to a swap undone within the read. The threat is a
+     * process on the host racing the host's own folder.
+     */
     fun read(path: String): Read {
         if (!Grant.isGrantedPath(path, fold)) return Read.Refused(Refusal.NOT_GRANTED)
         val segments = path.split('/')
-        val stream =
+        val realRoot =
             try {
-                Files.newDirectoryStream(root)
+                root.toRealPath()
             } catch (e: IOException) {
                 return Read.Refused(Refusal.MISSING)
             }
-        if (stream !is SecureDirectoryStream<Path>) {
-            stream.close()
-            return readWithoutDescriptors(segments)
-        }
-        return descend(stream, segments)
-    }
-
-    private fun descend(
-        rootStream: SecureDirectoryStream<Path>,
-        segments: List<String>,
-    ): Read {
-        val opened = ArrayList<SecureDirectoryStream<Path>>()
-        opened.add(rootStream)
-        try {
-            val ignores = ArrayList<Grant.IgnoreSource>()
-            rootIgnores(rootStream)?.let { ignores.add(Grant.IgnoreSource("", it)) }
-            var dir = rootStream
-            for ((index, segment) in segments.withIndex()) {
-                val name = Path.of(segment)
-                val leaf = index == segments.size - 1
-                if (!hasExactChild(dir, segment)) return Read.Refused(Refusal.MISSING)
-                textOf(dir, Path.of(".gitignore"), Grant.MAX_GRANT_FILE_BYTES)?.let {
-                    ignores.add(Grant.IgnoreSource(segments.subList(0, index).joinToString("/"), it))
-                }
-                val attributes =
-                    attributes(dir, name) ?: return Read.Refused(Refusal.MISSING)
-                if (!leaf) {
-                    if (!attributes.isDirectory || attributes.isSymbolicLink) return Read.Refused(Refusal.NOT_A_FILE)
-                    val next =
-                        try {
-                            dir.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS)
-                        } catch (e: IOException) {
-                            return Read.Refused(Refusal.NOT_A_FILE)
-                        }
-                    opened.add(next)
-                    dir = next
-                    continue
-                }
-                if (Grant.isIgnoredPath(ignores, segments.joinToString("/"), false, fold)) {
-                    return Read.Refused(Refusal.NOT_GRANTED)
-                }
-                if (!attributes.isRegularFile || attributes.isSymbolicLink) return Read.Refused(Refusal.NOT_A_FILE)
-                if (attributes.size() > Grant.MAX_GRANT_FILE_BYTES) return Read.Refused(Refusal.TOO_LARGE)
-                val bytes =
-                    try {
-                        dir
-                            .newByteChannel(name, setOf(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))
-                            .use { readBounded(it, Grant.MAX_GRANT_FILE_BYTES) }
-                    } catch (e: IOException) {
-                        return Read.Refused(Refusal.MISSING)
-                    } ?: return Read.Refused(Refusal.TOO_LARGE)
-                val text = decodableText(bytes) ?: return Read.Refused(Refusal.BINARY)
-                return Read.Text(Editing.toCrdt(text))
-            }
-            return Read.Refused(Refusal.MISSING)
-        } finally {
-            opened.asReversed().forEach { runCatching { it.close() } }
-        }
-    }
-
-    private fun attributes(
-        dir: SecureDirectoryStream<Path>,
-        name: Path,
-    ): BasicFileAttributes? =
-        try {
-            dir
-                .getFileAttributeView(
-                    name,
-                    BasicFileAttributeView::class.java,
-                    LinkOption.NOFOLLOW_LINKS,
-                ).readAttributes()
-        } catch (e: IOException) {
-            null
-        }
-
-    /**
-     * Whether [dir] holds an entry spelled exactly [name]: on a filesystem that folds case, opening
-     * `.GIT` reaches `.git`, and the rule that refuses one must not be passed by the other.
-     */
-    private fun hasExactChild(
-        dir: SecureDirectoryStream<Path>,
-        name: String,
-    ): Boolean {
-        val listing =
-            try {
-                dir.newDirectoryStream(Path.of("."), LinkOption.NOFOLLOW_LINKS)
-            } catch (e: IOException) {
-                return false
-            }
-        return listing.use { entries -> entries.any { it.fileName?.toString() == name } }
-    }
-
-    private fun rootIgnores(rootStream: SecureDirectoryStream<Path>): String? {
-        val git = attributes(rootStream, Path.of(".git")) ?: return null
-        if (!git.isDirectory || git.isSymbolicLink) return null
-        return try {
-            rootStream.newDirectoryStream(Path.of(".git"), LinkOption.NOFOLLOW_LINKS).use { gitDir ->
-                val gitStream = gitDir as? SecureDirectoryStream<Path> ?: return null
-                val info = attributes(gitStream, Path.of("info")) ?: return null
-                if (!info.isDirectory || info.isSymbolicLink) return null
-                gitStream.newDirectoryStream(Path.of("info"), LinkOption.NOFOLLOW_LINKS).use { infoDir ->
-                    textOf(infoDir as SecureDirectoryStream<Path>, Path.of("exclude"), Grant.MAX_GRANT_FILE_BYTES)
-                }
-            }
-        } catch (e: IOException) {
-            null
-        }
-    }
-
-    private fun textOf(
-        dir: SecureDirectoryStream<Path>,
-        name: Path,
-        bound: Int,
-    ): String? {
-        val attributes = attributes(dir, name) ?: return null
-        if (!attributes.isRegularFile || attributes.isSymbolicLink) return null
-        return try {
-            dir
-                .newByteChannel(name, setOf(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))
-                .use { readBounded(it, bound) }
-                ?.let(::decodableText)
-        } catch (e: IOException) {
-            null
-        }
-    }
-
-    /**
-     * Where the platform offers no descriptor-relative reads (`SecureDirectoryStream` is absent on
-     * Windows), each step is checked by path with links not followed. A residual: a directory swapped
-     * for a link between a step's check and the next step's open is followed there; the threat is a
-     * local process racing the host's own folder.
-     */
-    private fun readWithoutDescriptors(segments: List<String>): Read {
         var dir = root
         val ignores = ArrayList<Grant.IgnoreSource>()
-        readIgnore(
-            root.resolve(".git").resolve("info").resolve("exclude"),
-        )?.let { ignores.add(Grant.IgnoreSource("", it)) }
+        readIgnore(root.resolve(".git").resolve("info").resolve("exclude"))?.let { ignores.add(Grant.IgnoreSource("", it)) }
         for ((index, segment) in segments.withIndex()) {
             val exact =
                 try {
@@ -207,16 +80,8 @@ class GrantFolder(
                 dir = next
                 continue
             }
-            if (Grant.isIgnoredPath(
-                    ignores,
-                    segments.joinToString("/"),
-                    false,
-                    fold,
-                )
-            ) {
-                return Read.Refused(Refusal.NOT_GRANTED)
-            }
-            if (!attributes.isRegularFile) return Read.Refused(Refusal.NOT_A_FILE)
+            if (Grant.isIgnoredPath(ignores, path, false, fold)) return Read.Refused(Refusal.NOT_GRANTED)
+            if (!attributes.isRegularFile || attributes.isSymbolicLink) return Read.Refused(Refusal.NOT_A_FILE)
             if (attributes.size() > Grant.MAX_GRANT_FILE_BYTES) return Read.Refused(Refusal.TOO_LARGE)
             val bytes =
                 try {
@@ -226,6 +91,13 @@ class GrantFolder(
                 } catch (e: IOException) {
                     return Read.Refused(Refusal.MISSING)
                 } ?: return Read.Refused(Refusal.TOO_LARGE)
+            val contained =
+                try {
+                    next.toRealPath().startsWith(realRoot)
+                } catch (e: IOException) {
+                    false
+                }
+            if (!contained) return Read.Refused(Refusal.NOT_A_FILE)
             return decodableText(bytes)?.let { Read.Text(Editing.toCrdt(it)) } ?: Read.Refused(Refusal.BINARY)
         }
         return Read.Refused(Refusal.MISSING)
