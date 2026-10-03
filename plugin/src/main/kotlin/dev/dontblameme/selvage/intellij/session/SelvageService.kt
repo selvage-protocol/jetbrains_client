@@ -13,7 +13,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.project.ex.ProjectManagerEx
-import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.util.Alarm
 import dev.dontblameme.selvage.engine.HostContent
@@ -78,7 +77,7 @@ class SelvageService : Disposable {
                     val session = current ?: return
                     if (session.project != project) return
                     session.closeRoom()
-                    session.dispose()
+                    session.end()
                 }
             },
         )
@@ -114,7 +113,7 @@ class SelvageService : Disposable {
         }
         if (inSession != null) {
             if (!prompts().confirm(project, Say.hostWarning(), "Leave and host")) return
-            inSession.dispose()
+            inSession.end()
         }
         val base = project.basePath?.let { Path.of(it) }
         if (base == null || !base.toFile().isDirectory) {
@@ -223,7 +222,7 @@ class SelvageService : Disposable {
         val name = resolveDisplayName(project) ?: return
         if (inSession != null) {
             inSession.closeRoom()
-            inSession.dispose()
+            inSession.end()
         }
         val fragment = Invites.fragmentOf(invite)
         val wire = Invites.wireInviteFor(invite)
@@ -478,7 +477,7 @@ class SelvageService : Disposable {
             }
             session.closeRoom()
         }
-        session.dispose()
+        session.end()
         Notifier.info(project ?: session.project, Say.leftSession())
     }
 
@@ -745,7 +744,7 @@ class SelvageService : Disposable {
     override fun dispose() {
         current?.let {
             it.closeRoom()
-            Disposer.dispose(it)
+            it.end()
         }
         current = null
     }

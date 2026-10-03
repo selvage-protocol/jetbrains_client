@@ -365,7 +365,7 @@ class RoomSession(
         when (ending) {
             SessionEnding.CONNECTION_LOST -> {
                 Notifier.error(project, if (isHost) Say.disconnectedHost() else Say.disconnectedGuest())
-                dispose()
+                end()
             }
 
             else -> {
@@ -373,10 +373,10 @@ class RoomSession(
                 val kept = mirror
                 if (kept != null) {
                     Notifier.warn(project, Say.copyKept(sentence, kept.root.toString()))
-                    dispose(keepMirror = true)
+                    end(keepMirror = true)
                 } else {
                     Notifier.warn(project, sentence)
-                    dispose()
+                    end()
                 }
             }
         }
@@ -884,7 +884,8 @@ class RoomSession(
         changed.forEach { it() }
     }
 
-    fun dispose(keepMirror: Boolean) {
+    /** Ends the session: the editors let go, the engine left, the mirror removed unless [keepMirror]. */
+    fun end(keepMirror: Boolean = false) {
         this.keepMirror = keepMirror
         Disposer.dispose(this)
     }

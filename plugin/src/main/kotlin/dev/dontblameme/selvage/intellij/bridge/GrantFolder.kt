@@ -56,7 +56,9 @@ class GrantFolder(
             }
         var dir = root
         val ignores = ArrayList<Grant.IgnoreSource>()
-        readIgnore(root.resolve(".git").resolve("info").resolve("exclude"))?.let { ignores.add(Grant.IgnoreSource("", it)) }
+        readIgnore(
+            root.resolve(".git").resolve("info").resolve("exclude"),
+        )?.let { ignores.add(Grant.IgnoreSource("", it)) }
         for ((index, segment) in segments.withIndex()) {
             val exact =
                 try {
