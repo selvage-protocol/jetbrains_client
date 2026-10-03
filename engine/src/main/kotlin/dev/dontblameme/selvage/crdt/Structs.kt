@@ -432,8 +432,27 @@ internal fun splitItem(
     return rightItem
 }
 
-/** Reads one struct of an update, with its parent unresolved (a root name or an item ID). */
+/**
+ * Reads one struct of an update, with its parent unresolved (a root name or an item ID).
+ *
+ * A struct must end by clock `Int.MAX_VALUE`, so every length taken from a difference of clocks
+ * (a merge's gap, a split, merged runs) fits a [Struct.length]. yjs allows clocks up to 2^53 and
+ * yrs up to 2^32; a client that has written two thousand million clocks is refused here.
+ */
 internal fun readStruct(
+    decoder: UpdateDecoder,
+    client: Long,
+    clock: Long,
+    resolveRoot: ((String) -> Branch)?,
+): Struct {
+    val struct = readStructAt(decoder, client, clock, resolveRoot)
+    if (clock + struct.length > Int.MAX_VALUE) {
+        throw DecodeException("struct $client:$clock of length ${struct.length} ends past clock ${Int.MAX_VALUE}")
+    }
+    return struct
+}
+
+private fun readStructAt(
     decoder: UpdateDecoder,
     client: Long,
     clock: Long,

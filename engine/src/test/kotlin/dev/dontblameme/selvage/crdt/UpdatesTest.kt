@@ -1,5 +1,7 @@
 package dev.dontblameme.selvage.crdt
 
+import org.junit.jupiter.api.Timeout
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -205,6 +207,55 @@ class UpdatesTest {
             assertEquals(emptyMap<Long, Long>(), doc.store.stateVector(), dependency)
             assertTrue(recorder.updates.isEmpty(), dependency)
         }
+    }
+
+    /** Client [client]'s structs from [clock], each a string at the root "t" or a GC of that length. */
+    private fun structsAt(
+        client: Long,
+        clock: Long,
+        vararg structs: Any,
+    ): ByteArray =
+        Lib0Encoder()
+            .apply {
+                writeVarUint(1)
+                writeVarUint(structs.size)
+                writeVarUint(client)
+                writeVarUint(clock)
+                for (struct in structs) {
+                    if (struct is String) {
+                        writeUint8(Content.STRING)
+                        writeVarUint(1)
+                        writeVarString("t")
+                        writeVarString(struct)
+                    } else {
+                        writeUint8(Struct.GC_REF)
+                        writeVarUint((struct as Int).toLong())
+                    }
+                }
+                writeVarUint(0)
+            }.toByteArray()
+
+    // Preemptive: the merge this guards once looped for ever on a truncated skip length.
+    @Test
+    @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    fun a_clock_past_what_an_int_length_spans_is_refused_before_anything_integrates() {
+        val doc = Doc(1)
+        Updates.applyUpdate(doc, structsAt(5, 5, "a"))
+        val pending = assertNotNull(doc.store.pendingStructs).update
+        val recorder = Recorder(doc)
+        // Merged into the pending update, the gap from clock 6 to 2^40 would be a skip.
+        val far = structsAt(5, 1L shl 40, "b")
+        assertFailsWith<DecodeException> { Updates.applyUpdate(doc, far) }
+        assertContentEquals(pending, assertNotNull(doc.store.pendingStructs).update)
+        assertFailsWith<DecodeException> { Updates.mergeUpdates(listOf(pending, far)) }
+        // Two runs of deleted clocks whose merged length is past an Int.
+        assertFailsWith<DecodeException> { Updates.applyUpdate(doc, structsAt(9, 0, Int.MAX_VALUE, 1, "c")) }
+        assertEquals(emptyMap<Long, Long>(), doc.store.stateVector())
+        assertTrue(recorder.updates.isEmpty())
+        // The last clock a struct can end at is still accepted.
+        Updates.applyUpdate(doc, structsAt(5, Int.MAX_VALUE - 1L, "d"))
+        Updates.applyUpdate(doc, structsAt(9, 0, Int.MAX_VALUE - 1, "e"))
+        assertEquals(mapOf(9L to Int.MAX_VALUE.toLong()), doc.store.stateVector())
     }
 
     @Test
