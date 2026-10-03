@@ -530,8 +530,12 @@ class SelvageSession private constructor(
 
             Wire.PEER_LEFT -> {
                 val id = params?.string("peer_id") ?: return
-                peerList.firstOrNull { it.peerId == id }?.awarenessClientId?.let(session::forgetAwareness)
+                val claimed = peerList.firstOrNull { it.peerId == id }?.awarenessClientId
                 peerList = peerList.filter { it.peerId != id }
+                // §8.4: the state for the id it last claimed, and only while no seated peer claims it.
+                if (claimed != null && peerList.none { it.awarenessClientId == claimed }) {
+                    session.forgetAwareness(claimed)
+                }
                 session.seatLeft(clock(), id)
             }
 

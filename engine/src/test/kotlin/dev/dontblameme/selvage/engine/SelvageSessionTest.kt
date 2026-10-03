@@ -5,6 +5,8 @@ import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
 import dev.dontblameme.selvage.sealed.Role
 import dev.dontblameme.selvage.wire.Meta
+import dev.dontblameme.selvage.wire.SocketListener
+import dev.dontblameme.selvage.wire.Wire
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
@@ -189,5 +191,50 @@ class SelvageSessionTest {
         relay.settle()
         assertEquals(SessionEnding.CLOSING, guest.ending)
         assertEquals(SessionEnding.CLOSING, host.ending)
+    }
+
+    @Test
+    fun `a departed peer's caret goes at once, unless a seated peer still claims its awareness id`() {
+        val host = host()
+        val guest = join(host)
+        guest.open("README.md")
+        relay.settle()
+        guest.setCursor("README.md", Selection(1, 1))
+        relay.settle()
+        val id = guest.awarenessClientId()
+        assertEquals(listOf(id), host.cursors().map { it.clientId })
+
+        // A second connection claims the guest's awareness id and leaves (§8.4: the claim is a
+        // number any token holder may make, and last-claimant-wins).
+        val squatter = CopyOnWriteArrayList<String>()
+        val claim =
+            relay
+                .open(
+                    host.invite!!.substringBefore('#'),
+                    java.time.Duration.ofSeconds(1),
+                    object : SocketListener {
+                        override fun onText(text: String) {
+                            squatter.add(text)
+                        }
+
+                        override fun onBinary(bytes: ByteArray) = Unit
+
+                        override fun onClose(
+                            code: Int,
+                            reason: String,
+                        ) = Unit
+                    },
+                ).get(1, TimeUnit.SECONDS)
+        claim.sendText(Wire.hello("Mallory", id))
+        relay.settle()
+        assertEquals(2, host.peers().size, "$squatter")
+        claim.close(1000, "gone")
+        relay.settle()
+        assertEquals(listOf(id), host.cursors().map { it.clientId }, "the guest still claims $id")
+
+        // The guest leaving is what drops it, without waiting out the expiry.
+        guest.leave()
+        relay.settle()
+        assertEquals(emptyList(), host.cursors())
     }
 }
