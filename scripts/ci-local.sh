@@ -6,8 +6,9 @@
 #   scripts/ci-local.sh checks   # the engine's suite (with the differential test against real
 #                                # yjs), the live tests against a real selvaged, the
 #                                # specification's peer runner's own tests, its peer corpus and
-#                                # the corpus's mutation census, and the
-#                                # flake's sandboxed checks
+#                                # the corpus's mutation census, the plugin's suite in a test IDE,
+#                                # the plugin hosting and joining in a test IDE against a real
+#                                # selvaged, the Plugin Verifier, and the flake's sandboxed checks
 #   scripts/ci-local.sh all      # lint + checks
 #
 # The differential test needs yjs 13.x and y-protocols on disk. By default it looks for a sibling
@@ -17,7 +18,9 @@
 # The live tests spawn the selvaged SELVAGE_SELVAGED names and fail, saying so, without one. The
 # cross-implementation live test also loads the TypeScript engine from the vscode_client checkout
 # SELVAGE_VSCODE_CLIENT names, by default the sibling one, whose packages `npm ci` has installed.
-# The peer corpus reads the specification at SELVAGE_SPECIFICATION, by default the sibling checkout.
+# The plugin's pins compare against the same VS Code client checkout. The peer corpus reads the
+# specification at SELVAGE_SPECIFICATION, by default the sibling checkout. The first plugin run
+# downloads the IntelliJ IDEA it is tested and verified against into ~/.gradle (about 1.5 GB).
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -34,7 +37,7 @@ say() { printf '\n=== %s ===\n' "$*"; }
 
 job_lint() {
   say "lint: ktlint"
-  ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
+  ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
   say "lint: shellcheck"
   shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh
 }
@@ -52,6 +55,12 @@ job_checks() {
   scripts/run-peer-vectors.sh
   say "checks: the peer corpus's mutation census"
   scripts/run-peer-vectors.sh --mutation-census
+  say "checks: the plugin's suite in a test IDE"
+  ./gradlew --max-workers=4 --console=plain :plugin:test
+  say "checks: the plugin in a test IDE against a real selvaged"
+  ./gradlew --max-workers=4 --console=plain :plugin:test -Pselvage.live
+  say "checks: the Plugin Verifier against the targeted IDE"
+  ./gradlew --max-workers=4 --console=plain :plugin:verifyPlugin
   say "checks: the flake's checks"
   nix build ".#checks.${system}.ktlint" ".#checks.${system}.scripts" ".#checks.${system}.devshell" \
     --no-link --print-build-logs

@@ -76,7 +76,7 @@
             cp -r ${self} work
             chmod -R u+w work
             cd work
-            ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
+            ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
             touch $out
           '';
 
@@ -93,6 +93,7 @@
                 shellcheck ${self}/scripts/ci-local.sh ${self}/scripts/run-peer-vectors.sh
                 node --check ${self}/engine/src/test/node/yjs-driver.mjs
                 node --check ${self}/engine/src/test/node/ts-peer.mjs
+                node --check ${self}/plugin/src/test/node/bridge-driver.mjs
                 touch $out
               '';
 

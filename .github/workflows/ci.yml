@@ -15,7 +15,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       # The ktlint release the flake's nixpkgs carries, so a developer and the runner lint with
       # the same rules. The checksum is of the release's own `ktlint` asset.
@@ -42,9 +42,10 @@ jobs:
           path: .ci/reference_server
           persist-credentials: false
 
-      # The TypeScript engine the cross-implementation test drives, at its published `main`: the
-      # engine the other three clients share, so a change there that this one does not meet turns
-      # this job red too.
+      # The VS Code client at its published `main`: the TypeScript engine the cross-implementation
+      # test drives, the engine the other three clients share, so a change there that this one does
+      # not meet turns this job red too; and the words, seats, names, initials and grant rules the
+      # plugin's pins run through Node, with the vocabulary pin and manifest they read.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: selvage-protocol/vscode_client
@@ -75,8 +76,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: engine/src/test/node
 
-      # The packages that engine imports, at the versions its lockfile pins.
-      - name: install the TypeScript engine's packages
+      # The packages the TypeScript engine and the plugin's bridge import, at the versions the VS
+      # Code client's lockfile pins.
+      - name: install the VS Code client's packages
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: .ci/vscode_client
 
@@ -89,7 +91,7 @@ jobs:
 
       - name: lint
         run: |
-          ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
+          ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
           shellcheck scripts/*.sh
 
       - name: the engine's suite
@@ -124,3 +126,19 @@ jobs:
         run: scripts/run-peer-vectors.sh --mutation-census
         env:
           SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      # The IntelliJ IDEA these run in and are verified against is downloaded into ~/.gradle, which
+      # setup-gradle caches between runs.
+      - name: the plugin's suite in a test IDE
+        run: ./gradlew --max-workers=4 --console=plain :plugin:test
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+
+      - name: the plugin in a test IDE against a real selvaged
+        run: ./gradlew --max-workers=4 --console=plain :plugin:test -Pselvage.live
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+
+      - name: the Plugin Verifier against the targeted IDE
+        run: ./gradlew --max-workers=4 --console=plain :plugin:verifyPlugin
