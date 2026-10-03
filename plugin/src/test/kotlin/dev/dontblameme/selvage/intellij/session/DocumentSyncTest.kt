@@ -73,11 +73,12 @@ class DocumentSyncTest : BasePlatformTestCase() {
     private lateinit var replica: FakeReplica
     private lateinit var sync: DocumentSync
 
-    private val tolerated =
-        dev.dontblameme.selvage.intellij.TestIde
-            .tolerateProductExtensions()
+    private var tolerated: com.intellij.openapi.application.AccessToken? = null
 
     override fun setUp() {
+        tolerated =
+            dev.dontblameme.selvage.intellij.TestIde
+                .tolerateProductExtensions()
         super.setUp()
         replica = FakeReplica()
         sync =
@@ -226,7 +227,7 @@ class DocumentSyncTest : BasePlatformTestCase() {
         try {
             super.tearDown()
         } finally {
-            tolerated.close()
+            tolerated?.close()
         }
     }
 }

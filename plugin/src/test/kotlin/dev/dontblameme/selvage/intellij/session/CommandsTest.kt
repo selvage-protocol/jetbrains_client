@@ -36,11 +36,12 @@ class CommandsTest : BasePlatformTestCase() {
 
     private lateinit var prompts: ScriptedPrompts
 
-    private val tolerated =
-        dev.dontblameme.selvage.intellij.TestIde
-            .tolerateProductExtensions()
+    private var tolerated: com.intellij.openapi.application.AccessToken? = null
 
     override fun setUp() {
+        tolerated =
+            dev.dontblameme.selvage.intellij.TestIde
+                .tolerateProductExtensions()
         super.setUp()
         prompts = ScriptedPrompts()
         Prompts.current = prompts
@@ -54,7 +55,7 @@ class CommandsTest : BasePlatformTestCase() {
             try {
                 super.tearDown()
             } finally {
-                tolerated.close()
+                tolerated?.close()
             }
         }
     }
