@@ -18,7 +18,10 @@ class SelvageSessionTest {
     private val relay = FakeRelay()
     private val scheduler = ManualScheduler()
     private val sessions = ArrayList<SelvageSession>()
-    private val files = mapOf("README.md" to "hello\n", "src/main.rs" to "fn main() {}\n")
+    private val listed = listOf("README.md", "src/main.rs")
+
+    /** What the host's working copy would read, the unlisted file included: the listing is the guard. */
+    private val files = mapOf("README.md" to "hello\n", "src/main.rs" to "fn main() {}\n", "secret.txt" to "key")
 
     @AfterTest
     fun close() {
@@ -45,7 +48,7 @@ class SelvageSessionTest {
 
     private fun host(recorded: Recorded = Recorded()): SelvageSession =
         SelvageSession
-            .host("ws://relay.test", HostContent({ files.keys.toList() }, { files[it] }), options("Ada", recorded))
+            .host("ws://relay.test", HostContent({ listed }, { files[it] }), options("Ada", recorded))
             .also { sessions.add(it) }
             .also { relay.settle() }
 
