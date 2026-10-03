@@ -42,6 +42,15 @@ jobs:
           path: .ci/reference_server
           persist-credentials: false
 
+      # The TypeScript engine the cross-implementation test drives, at its published `main`: the
+      # engine the other three clients share, so a change there that this one does not meet turns
+      # this job red too.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: selvage-protocol/vscode_client
+          path: .ci/vscode_client
+          persist-credentials: false
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14.7"
@@ -66,6 +75,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: engine/src/test/node
 
+      # The packages that engine imports, at the versions its lockfile pins.
+      - name: install the TypeScript engine's packages
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .ci/vscode_client
+
       - name: install ktlint
         run: |
           curl -sSfL -o ktlint "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
@@ -89,11 +103,12 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "4"
 
-      - name: the engine against a real selvaged
+      - name: the engine against a real selvaged, alone and beside the TypeScript engine
         run: ./gradlew --max-workers=4 --console=plain :engine:liveTest
         env:
           SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
           SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
 
       - name: the specification's peer runner, by its own tests
         run: scripts/run-peer-vectors.sh --self-test
