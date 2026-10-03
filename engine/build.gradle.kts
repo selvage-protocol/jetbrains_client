@@ -1,5 +1,12 @@
 plugins {
     kotlin("jvm")
+    application
+}
+
+// The corpus subject: `specification/runner/run_peer.py --subject` drives the installed launcher.
+application {
+    mainClass.set("dev.dontblameme.selvage.subject.Main")
+    applicationDefaultJvmArgs = listOf("-XX:-UsePerfData", "-XX:TieredStopAtLevel=1")
 }
 
 kotlin {

@@ -19,12 +19,17 @@
         jdk = pkgs.jdk21;
         node = pkgs.nodejs_22;
         inherit (pkgs) gradle ktlint shellcheck;
-        python = pkgs.python3;
+        # The specification's peer runner verifies and seals frames with these.
+        python = pkgs.python3.withPackages (ps: [
+          ps.jsonschema
+          ps.referencing
+          ps.cryptography
+        ]);
       };
     in
     {
-      # JDK 21 for Gradle and the engine, Node for the differential test against yjs, ktlint for
-      # the lint, and no git hooks.
+      # JDK 21 for Gradle and the engine, Node for the differential test against yjs, Python for
+      # the specification's peer runner, ktlint for the lint, and no git hooks.
       devShells = forAllSystems (
         pkgs:
         let
@@ -79,7 +84,7 @@
                 ];
               }
               ''
-                shellcheck ${self}/scripts/ci-local.sh
+                shellcheck ${self}/scripts/ci-local.sh ${self}/scripts/run-peer-vectors.sh
                 node --check ${self}/engine/src/test/node/yjs-driver.mjs
                 touch $out
               '';

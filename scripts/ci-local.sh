@@ -28,7 +28,7 @@ job_lint() {
   say "lint: ktlint"
   ktlint --relative "engine/**/*.kt" "*.kts" "engine/*.kts"
   say "lint: shellcheck"
-  shellcheck scripts/ci-local.sh
+  shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh
 }
 
 job_checks() {
