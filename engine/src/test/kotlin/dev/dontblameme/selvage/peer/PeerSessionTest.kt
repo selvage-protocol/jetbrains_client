@@ -369,6 +369,23 @@ class PeerSessionTest {
     }
 
     @Test
+    fun `a reconnect keeps the carets of the peers it saw`() {
+        val room = Room()
+        val guest = room.join("p-guest")
+        room.settle()
+        room.host.insert("README.md", 0, "abcdef")
+        room.host.setCursor("README.md", Selection(2, 2))
+        room.settle()
+        assertEquals(listOf(room.host.awarenessClientId), guest.cursors().map { it.clientId })
+        val before = guest.awarenessClientId
+        room.leave("p-guest")
+        guest.detach()
+        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), if (before == 7L) 8L else 7L)
+        assertEquals(listOf(room.host.awarenessClientId), guest.cursors().map { it.clientId })
+        assertTrue(guest.awarenessClientId != before)
+    }
+
+    @Test
     fun `a new listing reaches the guests`() {
         var paths = listOf("a.txt")
         val room = Room { paths }

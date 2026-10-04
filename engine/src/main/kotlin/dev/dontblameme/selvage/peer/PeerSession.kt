@@ -139,7 +139,7 @@ class PeerSession(
 
     private val doc = Doc()
     private var clockOfLastMove = 0L
-    private var awareness = newAwareness(options.awarenessClientId ?: Doc.randomClientId(kotlin.random.Random))
+    private val awareness = newAwareness(options.awarenessClientId ?: Doc.randomClientId(kotlin.random.Random))
     private var localState: YAny.Obj? = null
     private var awarenessRenewedAt: Long? = null
 
@@ -478,11 +478,7 @@ class PeerSession(
         detached = false
         this.seat = seat
         this.roster = LinkedHashSet(roster)
-        if (awarenessClientId != awareness.clientID) {
-            val state = localState
-            awareness = newAwareness(awarenessClientId)
-            localState = state
-        }
+        awareness.rotate(awarenessClientId)
         awarenessRenewedAt = null
         counter = 0
         announcedAt = null

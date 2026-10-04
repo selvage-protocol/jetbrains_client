@@ -35,6 +35,19 @@ class AwarenessTest {
     }
 
     @Test
+    fun a_rotated_id_keeps_remote_states_and_publishes_its_first_state_above_clock_zero() {
+        val a = awareness(5)
+        val b = awareness(9).also { it.setLocalState(state("b.txt")) }
+        a.applyUpdate(b.encodeUpdate(), "remote")
+        a.rotate(6)
+        assertEquals(listOf(9L), a.states.keys.toList())
+        assertNull(a.meta[5])
+        a.setLocalState(state("a.txt"))
+        assertEquals(1L, a.meta[6]?.clock)
+        assertEquals(state("b.txt"), a.states[9])
+    }
+
+    @Test
     fun local_changes_bump_the_clock_and_report_only_real_changes() {
         val a = awareness(5)
         val changes = a.changes()

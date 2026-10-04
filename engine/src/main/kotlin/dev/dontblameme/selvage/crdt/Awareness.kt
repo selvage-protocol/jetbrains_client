@@ -15,7 +15,7 @@ data class AwarenessChange(
  * A state is any JSON value; [YAny.Null] is a removed one.
  */
 class Awareness(
-    val clientID: Long,
+    clientID: Long,
     private val renewMs: Long,
     private val expireMs: Long,
     private val now: () -> Long,
@@ -35,6 +35,9 @@ class Awareness(
             origin: Any?,
         )
     }
+
+    var clientID: Long = clientID
+        private set
 
     private val statesMap = LinkedHashMap<Long, YAny>()
     private val metaMap = LinkedHashMap<Long, Meta>()
@@ -59,6 +62,20 @@ class Awareness(
     fun onUpdate(listener: Listener): () -> Unit {
         updateListeners.add(listener)
         return { updateListeners.remove(listener) }
+    }
+
+    /**
+     * Takes [next] as this client's id, keeping every remote state. The old id's entry goes, and
+     * the new one starts removed at clock 0, so its first state is above the clock 0 y-protocols
+     * ignores for an id it has not seen.
+     */
+    fun rotate(next: Long) {
+        if (next == clientID) return
+        statesMap.remove(clientID)
+        metaMap.remove(clientID)
+        clientID = next
+        statesMap.remove(next)
+        metaMap[next] = Meta(0, now())
     }
 
     /** Publishes [state] as this client's on a newer clock; null clears it. */
