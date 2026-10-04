@@ -1016,7 +1016,7 @@ class RoomSession(
         if (cursor == null) {
             if (peer != null) return Landing.WAITING
             if (!follow) {
-                Notifier.warn(project, Say.nothingToGoTo(label(peerId)))
+                Notifier.warn(project, "${Words.goToNotInFile(label(peerId))}.")
                 return Landing.REFUSED
             }
             return Landing.GONE
@@ -1034,7 +1034,7 @@ class RoomSession(
         val selection = cursor.selection
         if (selection == null) {
             if (!engine.has(path)) return Landing.WAITING
-            if (!follow) Notifier.warn(project, Say.caretDoesNotResolve(label(peerId)))
+            if (!follow) Notifier.warn(project, "${Words.goToCursorNotFound(label(peerId))}.")
             return Landing.REFUSED
         }
         sync.sync(path)

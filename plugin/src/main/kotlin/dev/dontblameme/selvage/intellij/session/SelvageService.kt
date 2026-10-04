@@ -453,9 +453,9 @@ class SelvageService : Disposable {
                 if (targets.size ==
                     1
                 ) {
-                    Say.fetchingOpensOne(targets.first())
+                    Words.downloadCostSentence(targets.first())
                 } else {
-                    Say.fetchingOpensMany()
+                    Words.DOWNLOAD_COST_MANY_SENTENCE
                 },
             )
         }
@@ -737,7 +737,7 @@ class SelvageService : Disposable {
                         session.participants().firstOrNull { it.peerId == peerId }?.displayName ?: "",
                         peerId,
                     )
-                Notifier.warn(project, if (follow) Say.nothingToFollow(name) else Say.nothingToGoTo(name))
+                Notifier.warn(project, if (follow) Say.nothingToFollow(name) else "${Words.goToNotInFile(name)}.")
             } else {
                 then(peerId)
             }

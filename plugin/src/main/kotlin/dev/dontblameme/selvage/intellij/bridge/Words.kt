@@ -68,20 +68,31 @@ object Words {
     private fun windowWords(graceMs: Double): String =
         if (graceMs >= 60_000) graceWording(graceMs) else graceWording(ceil(graceMs / 1000) * 1000)
 
+    fun goToNotInFile(name: String): String = "$name is not in a file"
+
+    fun goToCursorNotFound(name: String): String = "$name’s cursor could not be found in this file"
+
     fun followEndedByTyping(name: String): String = "Stopped following $name because you started typing."
 
-    fun followEndedByMoving(name: String): String = "Stopped following $name because you moved."
+    fun followEndedByMoving(name: String): String = "Stopped following $name because you moved your cursor."
 
     fun followEndedByLeaving(name: String): String = "$name left the room, so following stopped."
 
     fun followEndedByFileGone(name: String): String = "Stopped following $name because the file is gone."
 
+    fun downloadCostSentence(path: String): String =
+        "Downloading $path opens it in the room, so everyone there gets its text."
+
+    const val DOWNLOAD_COST_MANY_SENTENCE =
+        "Downloading these files opens them in the room, so everyone there gets their text."
+
     const val LEAVE_HOST_LABEL = "Leave and end the room"
     const val LEAVE_ASKING_LABEL = "Leave anyway"
     const val LEAVE_CANCEL_LABEL = "Cancel"
 
-    const val HOST_LEAVE_QUESTION =
-        "Leaving ends the room for everyone and stops the invite link, and your last few keystrokes may not reach your folder."
+    const val HOST_LEAVE_CONSEQUENCE = "Leaving ends the room for everyone and stops the invite link."
+
+    const val HOST_LEAVE_QUESTION = "$HOST_LEAVE_CONSEQUENCE Your last few keystrokes may not reach your folder."
 
     const val SESSION_ENDED_MESSAGE = "The session ended."
 
