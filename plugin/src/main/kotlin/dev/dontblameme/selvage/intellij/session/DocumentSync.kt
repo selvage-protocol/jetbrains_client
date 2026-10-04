@@ -388,7 +388,9 @@ class DocumentSync(
             return
         }
         try {
-            manager.saveDocument(entry.document)
+            // As it is: a save the room asked for must not add a final line break nobody typed,
+            // which every other participant would receive as an edit.
+            manager.saveDocumentAsIs(entry.document)
         } catch (e: RuntimeException) {
             reports.saveFailed(entry.path, (e.cause ?: e).message ?: e.toString())
             return

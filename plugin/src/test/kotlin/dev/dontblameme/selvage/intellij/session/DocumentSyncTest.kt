@@ -329,6 +329,30 @@ class DocumentSyncTest : BasePlatformTestCase() {
         }
     }
 
+    fun testASaveTheRoomAsksForAddsNoLineBreakNobodyTyped() {
+        val settings =
+            com.intellij.openapi.editor.ex.EditorSettingsExternalizable
+                .getInstance()
+        val before = settings.isEnsureNewLineAtEOF
+        settings.isEnsureNewLineAtEOF = true
+        try {
+            val saving =
+                DocumentSync(project, replica, Recorded(), testRootDisposable, autoSave = { true }, saveSettleMs = 50)
+            val (path, document) = onDisk("no-break.txt", "no break")
+            saving.bind("no-break.txt", document, seed = true)
+            replica.published.clear()
+            saving.remoteEdit("no-break.txt", replica.remote("no-break.txt", 0, 0, "still "))
+            settle()
+            eventually("the room's edit is saved") { !FileDocumentManager.getInstance().isDocumentUnsaved(document) }
+            settle()
+            assertEquals("the document holds what the room holds", "still no break", document.text)
+            assertEquals("and nothing was published", emptyList<Editing.TextChange>(), replica.published)
+            eventually("the file holds it too") { Files.readString(path) == "still no break" }
+        } finally {
+            settings.isEnsureNewLineAtEOF = before
+        }
+    }
+
     fun testASaveTheIdeHoldsBackIsSaid() {
         val reports = Recorded()
         val saving = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { true }, saveSettleMs = 50)

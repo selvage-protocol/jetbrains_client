@@ -673,7 +673,7 @@ class RoomSession(
         fetchedOnly.add(path)
         val finish = {
             sync.sync(path)
-            FileDocumentManager.getInstance().saveDocument(document)
+            FileDocumentManager.getInstance().saveDocumentAsIs(document)
             fetchedOnly.remove(path)
             if (!FileEditorManager.getInstance(project).isFileOpen(file)) sync.unbind(path)
         }
@@ -1025,6 +1025,21 @@ class RoomSession(
             val files = FileEditorManager.getInstance(project).openFiles
             for (file in files) if (pathOf(file) != null) FileEditorManager.getInstance(project).closeFile(file)
             mirror.remove()
+            // A window opened on the mirror would be left on a folder that is gone; a kept copy keeps its window.
+            if (project.basePath?.let { Path.of(it) } == mirror.root) {
+                ApplicationManager.getApplication().invokeLater(
+                    {
+                        if (!project.isDisposed) {
+                            com.intellij.openapi.project.ProjectManager
+                                .getInstance()
+                                .closeAndDispose(
+                                    project,
+                                )
+                        }
+                    },
+                    ModalityState.nonModal(),
+                )
+            }
         }
         onFinished.forEach { it(this) }
         changed.forEach { it() }
