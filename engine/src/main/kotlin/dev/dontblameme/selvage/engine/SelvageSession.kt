@@ -176,6 +176,7 @@ class SelvageSession private constructor(
     private var handshaking = false
     private var pendingSeat: CompletableFuture<Seating>? = null
     private val inbox = ArrayDeque<Any>()
+    private var inboxBytes = 0L
     private var start = 0L
     private var timer: Cancellable? = null
     private var retryTimer: Cancellable? = null
@@ -502,20 +503,45 @@ class SelvageSession private constructor(
                 }
             }
         }
-        if (inbox.size >= MAX_INBOX_FRAMES) {
+        // §7: a binary frame is relayed to the room's participants, so none is owed before the seat.
+        if (frame is ByteArray && handshaking) return
+        val size = weight(frame)
+        if (inbox.size >= MAX_INBOX_FRAMES || inboxBytes + size > MAX_INBOX_BYTES) {
             // §2.1: a client bounds what it holds; past it the connection is dropped like any drop.
-            inbox.clear()
-            socket?.close(1008, "inbound queue full")
+            clearInbox()
+            if (handshaking) {
+                // Failed here, so a seat that follows on this socket is not taken.
+                pendingSeat?.completeExceptionally(SessionException("closed", "inbound queue full before the seat"))
+            } else {
+                socket?.close(1008, "inbound queue full")
+            }
             return
         }
         inbox.addLast(frame)
+        inboxBytes += size
         if (!handshaking && peer != null) drainInbox()
+    }
+
+    /** What a queued frame holds: its bytes, or a text's UTF-16 code units at two bytes each. */
+    private fun weight(frame: Any): Long =
+        if (frame is ByteArray) {
+            frame.size.toLong()
+        } else {
+            2L *
+                (frame as String).length
+        }
+
+    private fun clearInbox() {
+        inbox.clear()
+        inboxBytes = 0
     }
 
     private fun drainInbox() {
         val session = peer ?: return
         while (inbox.isNotEmpty() && !handshaking) {
-            when (val frame = inbox.removeFirst()) {
+            val frame = inbox.removeFirst()
+            inboxBytes -= weight(frame)
+            when (frame) {
                 is ByteArray -> refused(session, session.deliver(clock(), frame))
                 is String -> event(session, frame)
             }
@@ -620,7 +646,7 @@ class SelvageSession private constructor(
             return
         }
         session.detach()
-        inbox.clear()
+        clearInbox()
         stopTimers()
         scheduleReconnect()
     }
@@ -802,6 +828,9 @@ class SelvageSession private constructor(
     companion object {
         /** The most frames queued ahead of the session before the connection is dropped. */
         const val MAX_INBOX_FRAMES = 4096
+
+        /** The most bytes queued ahead of the session before the connection is dropped. */
+        const val MAX_INBOX_BYTES = 16L * 1024 * 1024
 
         /** Mints a room at [baseUrl]; this connection is its host. */
         fun host(

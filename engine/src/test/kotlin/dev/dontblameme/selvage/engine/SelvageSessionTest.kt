@@ -252,6 +252,26 @@ class SelvageSessionTest {
     }
 
     @Test
+    fun `a binary frame before the seat is not held for it`() {
+        val host = host()
+        val seen = Recorded()
+        relay.preSeat = List(3) { byteArrayOf(1, 2, 3) }
+        val guest = join(host, seen)
+        assertEquals(Role.GUEST, guest.ownRole())
+        assertEquals(emptyList(), seen.all<SessionEvent.FrameRefused>().filter { it.reason == DropReason.BAD_ENVELOPE })
+    }
+
+    @Test
+    fun `text held before the seat is bounded in bytes, not only in frames`() {
+        val host = host()
+        val noise = "{\"event\":\"x.noise\",\"params\":{\"pad\":\"${"a".repeat(3_000_000)}\"},\"v\":\"selvage/2\"}"
+        relay.preSeat = List(3) { noise }
+        val refused =
+            assertFailsWith<SessionException> { SelvageSession.join(host.invite!!, options("Bob", Recorded())) }
+        assertTrue(refused.message!!.contains("inbound queue full"), refused.message)
+    }
+
+    @Test
     fun `a refused link and a refused room are said, not retried`() {
         val host = host()
         val noKeys = host.invite!!.substringBefore('#')

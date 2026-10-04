@@ -108,6 +108,12 @@ class FakeRelay : Transport {
                 event("session.error", JsonValue.Obj.of("code" to code.json(), "message" to "refused".json()))
                 return
             }
+            for (frame in preSeat) {
+                when (frame) {
+                    is ByteArray -> listener.onBinary(frame)
+                    is String -> listener.onText(frame)
+                }
+            }
             name = params.string("display_name")!!
             awareness = (params["awareness_client_id"] as? JsonValue.Number)?.count()
             val query =
@@ -187,6 +193,10 @@ class FakeRelay : Transport {
     }
 
     val connections = ArrayList<Conn>()
+
+    /** Sent to each connection ahead of its `room.created` or `room.joined`, as no server does. */
+    @Volatile
+    var preSeat: List<Any> = emptyList()
 
     /** The next `session.hello` is answered with this `session.error` code, the socket left open. */
     @Volatile
