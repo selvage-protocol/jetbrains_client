@@ -130,7 +130,7 @@ def read_line(stream, timeout, label):
     return line
 
 
-# --- the server, the displays, the proxy ---------------------------------------------------------
+# --- the server and the displays -----------------------------------------------------------------
 
 
 def start_selvaged():
