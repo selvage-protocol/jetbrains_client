@@ -42,6 +42,15 @@ class MirrorTest : TestCase() {
         assertFalse(Files.exists(scratch.resolve("storage/rooms/room-1/escape.txt")))
     }
 
+    fun testRunConfigurationsAreWithheldWhereverTheIdeReadsThem() {
+        val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w")
+        val configs = listOf(".run/Tests.run.xml", ".RUN/notes.txt", "tools/Deploy.run.xml", "x.RUN.XML", ".run./a.xml")
+        val report = mirror.materialise(configs + "src/run.xml" + "running.txt")
+        assertEquals(configs, report.withheld)
+        assertEquals(listOf("src/run.xml", "running.txt"), report.mirrored)
+        for (path in configs) assertFalse(Files.exists(mirror.root.resolve(path)))
+    }
+
     fun testALinkInsideTheMirrorIsNotWrittenThrough() {
         val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w")
         val outside = Files.createDirectories(scratch.resolve("outside"))

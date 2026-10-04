@@ -39,7 +39,7 @@ the IDE asks where to open the room unless you told it not to ask.
 
 The notice is VS Code's: `joined the room, opening <path>.`, with `<n> more files are open.` and an
 **Open a document from the room** button when there are more. The room's project settings
-(`.idea/**`, `*.iml`, `*.ipr`, `*.iws`) are not written into the copy, and that is said once.
+(`.idea/**`, `.run/**`, `*.run.xml`, `*.iml`, `*.ipr`, `*.iws`) are not written into the copy, and that is said once.
 
 When the session ends, the copy and its window go. When the room ends under you, the copy is kept
 and the sentence says where.
@@ -76,7 +76,7 @@ Each of these is the editor's business under `AGENTS.md` §3; none removes a com
 |---|---|---|---|
 | Where a joined room opens | The window reloads onto the room's folder, after asking `joining replaces this window's folder…` | A new project window; your own project stays open | An IntelliJ window holds one project and opening another does not replace it, so there is nothing to warn about. The IDE asks where to open it when a project is open. |
 | Restricted Mode for the room's folder | Workspace trust | The project opens untrusted, in safe mode | The IDE's own form of the same protection. |
-| Workspace settings left out of the copy | `.vscode/**`, `*.code-workspace` | `.idea/**`, `*.iml`, `*.ipr`, `*.iws`, said in this client's own sentence | Those are the files this IDE would apply rather than show. |
+| Workspace settings left out of the copy | `.vscode/**`, `*.code-workspace` | `.idea/**`, `.run/**`, `*.run.xml`, `*.iml`, `*.ipr`, `*.iws`, said in this client's own sentence | Those are the files this IDE would apply rather than show. |
 | A host with several folders | Paths qualified `<folder>/<path>` | One folder, the project's base | A project has one base directory. |
 | Clicking the session's name | The people list | The Selvage menu, with the people list in it and in the tool window | The menu reaches all twelve commands from the status bar, which has no palette beside it. |
 | A viewer's keystroke | Put back to the room's text | Refused by the editor: the document is read-only | The IDE can mark one document read-only, as Neovim's `modifiable = false`; VS Code cannot, so it puts the text back. `§13.9` allows either. |

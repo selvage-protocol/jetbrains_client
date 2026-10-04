@@ -203,23 +203,24 @@ class Mirror private constructor(
 
         /**
          * Whether a room path names what IntelliJ reads as the project's own configuration: anything under
-         * `.idea`, or a module, project or workspace file. The mirror is opened as a project, and a host's
-         * text there would be applied (run configurations included) rather than shown, so it is withheld.
+         * `.idea` or `.run`, a module, project or workspace file, or a run configuration stored as a
+         * `*.run.xml` file, which the IDE picks up from anywhere in the project. The mirror is opened as a
+         * project, and a host's text there would be applied rather than shown, so it is withheld. The
+         * comparison folds case and ignores trailing dots and spaces, as the guest's filesystem may.
          */
         fun isWorkspaceConfigPath(path: String): Boolean {
             val segments = path.split('/').map { it.lowercase(Locale.ROOT).replace(Regex("[. ]+$"), "") }
             val leaf = segments.size - 1
             return segments.withIndex().any { (index, segment) ->
-                (index < leaf && segment == ".idea") ||
-                    (
-                        index == leaf && (
-                            segment.endsWith(
-                                ".iml",
-                            ) || segment.endsWith(".ipr") || segment.endsWith(".iws")
-                        )
-                    )
+                if (index < leaf) {
+                    segment == ".idea" || segment == ".run"
+                } else {
+                    WORKSPACE_CONFIG_SUFFIXES.any { segment.endsWith(it) }
+                }
             }
         }
+
+        private val WORKSPACE_CONFIG_SUFFIXES = listOf(".iml", ".ipr", ".iws", ".run.xml")
 
         /** Mints `<storage>/rooms/<room>/<window>/` and its marker, refusing to mint through a link. */
         fun mint(
