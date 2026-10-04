@@ -80,6 +80,7 @@ class JdkTransport(
         val listener: SocketListener,
     ) : WebSocket.Listener {
         private val text = StringBuilder()
+        private var textBytes = 0L
         private val binary = ByteArrayOutputStream()
         private var closed = false
 
@@ -93,14 +94,12 @@ class JdkTransport(
             last: Boolean,
         ): CompletionStage<*>? {
             text.append(data)
-            if (text.length * 3L > Wire.MAX_INBOUND_MESSAGE_BYTES &&
-                text.toString().toByteArray(Charsets.UTF_8).size > Wire.MAX_INBOUND_MESSAGE_BYTES
-            ) {
-                return tooLong(webSocket)
-            }
+            textBytes += utf8Length(data)
+            if (textBytes > Wire.MAX_INBOUND_MESSAGE_BYTES) return tooLong(webSocket)
             if (last) {
                 val message = text.toString()
                 text.setLength(0)
+                textBytes = 0
                 listener.onText(message)
             }
             webSocket.request(1)
@@ -152,8 +151,24 @@ class JdkTransport(
             listener.onClose(code, reason)
         }
 
+        /** The UTF-8 length of [data], counted as it arrives: a surrogate is half of a 4-byte pair. */
+        private fun utf8Length(data: CharSequence): Long {
+            var bytes = 0L
+            for (c in data) {
+                bytes +=
+                    when {
+                        c.code < 0x80 -> 1
+                        c.code < 0x800 -> 2
+                        c.isSurrogate() -> 2
+                        else -> 3
+                    }
+            }
+            return bytes
+        }
+
         private fun tooLong(webSocket: WebSocket): CompletionStage<*>? {
             text.setLength(0)
+            textBytes = 0
             binary.reset()
             webSocket.abort()
             closed(1009, "a message over ${Wire.MAX_INBOUND_MESSAGE_BYTES} bytes")

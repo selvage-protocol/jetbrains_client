@@ -115,4 +115,62 @@ class TransportTest {
         assertEquals(listOf(1006), closes)
         assertEquals(true, socket.aborted.get())
     }
+
+    private class Received : SocketListener {
+        val texts = CopyOnWriteArrayList<String>()
+        val closes = CopyOnWriteArrayList<Int>()
+
+        override fun onText(text: String) {
+            texts.add(text)
+        }
+
+        override fun onBinary(bytes: ByteArray) = Unit
+
+        override fun onClose(
+            code: Int,
+            reason: String,
+        ) {
+            closes.add(code)
+        }
+    }
+
+    @Test
+    fun `text is bounded at its UTF-8 length, counted as it arrives`() {
+        val socket = SlowSocket(emptyList())
+        val limit = Wire.MAX_INBOUND_MESSAGE_BYTES
+        // A pair split across fragments is four bytes, as one code point.
+        val exact = Received()
+        JdkTransport.Receiver(exact).apply {
+            onText(socket, "a".repeat(limit - 6), false)
+            onText(socket, "\u00e9\ud83d", false)
+            onText(socket, "\ude00", true)
+        }
+        assertEquals(listOf(limit), exact.texts.map { it.toByteArray(Charsets.UTF_8).size })
+        val over = Received()
+        JdkTransport.Receiver(over).apply {
+            onText(socket, "a".repeat(limit - 2), false)
+            onText(socket, "\u20ac", true)
+        }
+        assertEquals(listOf(1009), over.closes)
+        assertEquals(emptyList(), over.texts)
+    }
+
+    @Test
+    fun `many small fragments after a large one are not each re-encoded`() {
+        val socket = SlowSocket(emptyList())
+        val received = Received()
+        val receiver = JdkTransport.Receiver(received)
+        val work =
+            CompletableFuture.runAsync {
+                receiver.onText(socket, "a".repeat(5_600_000), false)
+                repeat(20_000) { receiver.onText(socket, "a", false) }
+                receiver.onText(socket, "", true)
+            }
+        try {
+            work.get(20, TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            fail("20 000 one-character fragments after 5.6 M characters took over 20 s")
+        }
+        assertEquals(listOf(5_620_000), received.texts.map { it.length })
+    }
 }
