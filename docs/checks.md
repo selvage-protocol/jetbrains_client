@@ -21,8 +21,12 @@ the server and the VS Code client at their published `main`.
 
 `scripts/check_dry_run_gating.py` reads `.github/workflows` back and refuses a workflow that declares
 a `dry_run` input and leaves a step after its plan step without a condition that excludes a dry
-run: the defect `actionlint` cannot see, because it is the condition a step does not carry. It is
-the sibling clients' copy, byte for byte, and `scripts/test_check_dry_run_gating.py` is its suite.
+run: the defect `actionlint` cannot see, because it is the condition a step does not carry. A
+condition is judged by what it evaluates to on a dry run rather than by the text it contains, so
+`!(inputs.dry_run != true)` is refused even though it contains a gate. The file and its suite,
+`scripts/test_check_dry_run_gating.py`, are this repository's, and the copies in
+`reference_server`, `specification`, `vscode_client`, `nvim_client` and `web_client` are the same
+two files byte for byte.
 `checks` runs both as the flake check `dry-run-gating`, and CI runs the same two files with pip's
 PyYAML. `scripts/test-bump-version.sh` runs `scripts/bump-version.sh` on a scratch copy of the tree
 and asserts that a bump writes the build's version and the client identity and no other file.
