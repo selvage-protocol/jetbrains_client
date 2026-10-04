@@ -42,6 +42,7 @@ WATCHDOG_S = float(os.environ.get("SELVAGE_E2E_WATCHDOG_S", "900"))
 SPAWN_S = 30.0
 POLL_S = 0.1
 ROOM_GRACE_MS = 5000
+SCREEN = "1600x1000x24"
 
 SEED_PATH = "notes.txt"
 SEED_TEXT = "a document two real editors are about to share\n"
@@ -156,7 +157,7 @@ def start_display(name):
     read, write = os.pipe()
     spawn(
         f"{name}-xvfb",
-        ["Xvfb", "-displayfd", str(write), "-screen", "0", "1600x1000x24", "-nolisten", "tcp", "-fbdir", str(fbdir)],
+        ["Xvfb", "-displayfd", str(write), "-screen", "0", SCREEN, "-nolisten", "tcp", "-nocursor", "-fbdir", str(fbdir)],
         pass_fds=(write,),
     )
     os.close(write)
