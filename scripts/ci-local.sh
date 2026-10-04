@@ -2,14 +2,17 @@
 #
 # The local gate, run inside `nix develop`:
 #
-#   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over this script
+#   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over the scripts, and
+#                                # a syntax check of the end-to-end test's orchestrator
 #   scripts/ci-local.sh checks   # the engine's suite (with the differential test against real
 #                                # yjs), the live tests against a real selvaged, the
 #                                # specification's peer runner's own tests, its peer corpus and
 #                                # the corpus's mutation census, the plugin's suite in a test IDE,
 #                                # the plugin hosting and joining in a test IDE against a real
 #                                # selvaged, the Plugin Verifier, and the flake's sandboxed checks
-#   scripts/ci-local.sh all      # lint + checks
+#   scripts/ci-local.sh links    # lychee over README.md and docs/
+#   scripts/ci-local.sh e2e      # two real IDEs and the TypeScript engine against a real selvaged
+#   scripts/ci-local.sh all      # lint + checks + links + e2e
 #
 # The differential test needs yjs 13.x and y-protocols on disk. By default it looks for a sibling
 # `vscode_client/node_modules`, then `web_client/node_modules`; set SELVAGE_YJS_NODE_MODULES (or
@@ -39,7 +42,18 @@ job_lint() {
   say "lint: ktlint"
   ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
   say "lint: shellcheck"
-  shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh
+  shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh
+  python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
+}
+
+job_links() {
+  say "links: README.md and docs/"
+  lychee --config lychee.toml --no-progress README.md docs
+}
+
+job_e2e() {
+  say "e2e: two IDEs and the TypeScript engine against a real selvaged"
+  scripts/e2e/run-two-instance.sh
 }
 
 job_checks() {
@@ -69,9 +83,11 @@ job_checks() {
 case "${1:-}" in
   lint) job_lint ;;
   checks) job_checks ;;
-  all) job_lint && job_checks ;;
+  links) job_links ;;
+  e2e) job_e2e ;;
+  all) job_lint && job_checks && job_links && job_e2e ;;
   *)
-    printf 'usage: %s [lint|checks|all]\n' "$0" >&2
+    printf 'usage: %s [lint|checks|links|e2e|all]\n' "$0" >&2
     exit 2
     ;;
 esac

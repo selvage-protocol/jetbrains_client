@@ -1,0 +1,10 @@
+# What the link check covers, and what it cannot fetch.
+#
+# The scope is the reader-facing prose: `README.md` and `docs/`. `scripts/ci-local.sh links` and
+# the `checks` job of `.github/workflows/ci.yml` pass this file and those two arguments.
+#
+# `exclude` holds the addresses the check cannot fetch, each with its reason.
+exclude = [
+  # The README names no address to write to; a `mailto:` would not be followed.
+  "^mailto:",
+]

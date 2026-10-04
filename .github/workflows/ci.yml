@@ -15,12 +15,15 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       # The ktlint release the flake's nixpkgs carries, so a developer and the runner lint with
       # the same rules. The checksum is of the release's own `ktlint` asset.
       KTLINT_VERSION: "1.8.0"
       KTLINT_SHA256: "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
+      # The lychee release the sibling clients pin, with the checksum published beside the archive.
+      LYCHEE_VERSION: "0.24.2"
+      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,7 +95,8 @@ jobs:
       - name: lint
         run: |
           ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh scripts/e2e/*.sh
+          python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
 
       - name: the engine's suite
         run: ./gradlew --max-workers=4 --console=plain :engine:test
@@ -142,3 +146,27 @@ jobs:
 
       - name: the Plugin Verifier against the targeted IDE
         run: ./gradlew --max-workers=4 --console=plain :plugin:verifyPlugin
+
+      # The runner has no nix, so the pinned lychee release is installed here. `$RUNNER_TEMP` is the
+      # runner's own scratch directory.
+      - name: install lychee
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/lychee.tar.gz" \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${LYCHEE_SHA256}  $RUNNER_TEMP/lychee.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/lychee.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+          sudo install -m 0755 "$RUNNER_TEMP/lychee" /usr/local/bin/lychee
+          lychee --version
+
+      - name: links over the README and docs
+        run: lychee --config lychee.toml --no-progress README.md docs
+
+      # Two real IDEs, each on its own Xvfb display, in one room with the TypeScript engine.
+      - name: install Xvfb
+        run: sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: two IDEs and the TypeScript engine against a real selvaged
+        run: scripts/e2e/run-two-instance.sh
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
