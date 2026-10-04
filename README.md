@@ -72,10 +72,10 @@ client differs from the VS Code one and why.
 | | |
 |---|---|
 | Server URL | The server to host on. Set it and hosting never asks. |
-| Display name | The name other participants see, at most 32 UTF-16 code units. A change renames a live session. |
+| Display name | The name other participants see, up to 32 characters with an emoji counting as two. A change renames a live session. |
 | Save a document the room changed | On by default. Off leaves a remote edit unsaved in the editor. |
 | Open the room's first document on join | On by default. |
-| Cursor label | `none` (default), `floating` or `chip`: whether a peer's name is drawn at their caret. |
+| Cursor label | Off (default), Above the caret or Beside the caret: whether and where a peer's name is drawn at their caret. |
 
 [Configuration](docs/configuration.md) has the details and where the settings are stored.
 
