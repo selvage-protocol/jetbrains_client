@@ -1,14 +1,19 @@
 package dev.dontblameme.selvage.intellij.e2e
 
+import com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerEx
 import com.intellij.diagnostic.MessagePool
 import com.intellij.ide.ActivityTracker
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.notification.Notification
 import com.intellij.notification.NotificationsManager
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.impl.ActionButton
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.ex.EditorSettingsExternalizable
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -17,6 +22,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.openapi.wm.ex.StatusBarEx
+import com.intellij.psi.PsiManager
 import com.intellij.util.ui.UIUtil
 import dev.dontblameme.selvage.canonical.JsonValue
 import dev.dontblameme.selvage.intellij.settings.SelvageConfigurable
@@ -71,10 +77,12 @@ object Stage {
 
     /**
      * Balloons and notifications gone, the status bar's error mark cleared (the errors it held are
-     * answered, for the script to report), and a caret that does not blink between two captures.
+     * answered, for the script to report), a caret that does not blink between two captures, and no
+     * trial button: the sandbox's IDE has no licence, and a licensed one does not show it.
      */
     private fun quiet(project: Project): Map<String, JsonValue> {
         val errors = errors()
+        hideTrialButton()
         MessagePool.getInstance().clearErrors()
         NotificationsManager
             .getNotificationsManager()
@@ -82,6 +90,16 @@ object Stage {
             .forEach { it.expire() }
         EditorSettingsExternalizable.getInstance().isBlinkCaret = false
         return mapOf("cleared" to errors)
+    }
+
+    private fun hideTrialButton() {
+        val actions = ActionManager.getInstance()
+        val toolbar = actions.getAction("MainToolbarRight") as? DefaultActionGroup ?: return
+        val trial = actions.getAction("TrialStateWidget") ?: return
+        if (trial in toolbar.childActionsOrStubs) {
+            toolbar.remove(trial, actions)
+            ActivityTracker.getInstance().inc()
+        }
     }
 
     private fun errors(): JsonValue =
@@ -227,7 +245,18 @@ object Stage {
         return emptyMap()
     }
 
-    /** What still moves or covers a frame: indexing, background tasks, a modal dialog, other windows. */
+    /** Whether the file in front of each project has been through the IDE's analysis, so its marks are drawn. */
+    private fun analyzed(project: Project): Boolean =
+        ReadAction.compute<Boolean, RuntimeException> {
+            val file = FileEditorManager.getInstance(project).selectedTextEditor?.virtualFile
+            val psi = file?.let { PsiManager.getInstance(project).findFile(it) }
+            psi == null || DaemonCodeAnalyzerEx.getInstanceEx(project).isErrorAnalyzingFinished(psi)
+        }
+
+    /**
+     * What still moves or covers a frame: indexing, background tasks, analysis still running, a modal
+     * dialog, other windows.
+     */
     fun report(): Map<String, JsonValue> {
         val projects = ProjectManager.getInstance().openProjects.filter { !it.isDisposed }
         val busy =
@@ -236,6 +265,7 @@ object Stage {
             }
         return mapOf(
             "smart" to JsonValue.Bool(projects.none { DumbService.isDumb(it) }),
+            "analyzed" to JsonValue.Bool(projects.all { analyzed(it) }),
             "busy" to JsonValue.Number.of(busy.toLong()),
             "errors" to errors(),
             "modal" to JsonValue.Bool(Window.getWindows().any { it.isShowing && it is Dialog && it.isModal }),

@@ -3,9 +3,10 @@
 It reuses the end-to-end test's pieces (`scripts/e2e/two_instance.py`): each IDE has its own
 sandbox under `.tmp/screenshots/` and its own Xvfb display, here 1280×800, the size Marketplace
 recommends, and the driver plugin stages each scene through the plugin's own commands. Ada hosts
-a small Kotlin project written below; Grace joins from the invite. A scene is captured once the
-IDE reports smart mode, no background task, nothing modal it did not ask for, and two captures of
-the display in a row are the same.
+a small Kotlin project written below; Grace joins from the invite. Each IDE's home directory is its
+sandbox, so the project reads as `~/taskboard` and no path of the machine taking the pictures is in
+them. A scene is captured once the IDE reports smart mode, no background task, nothing modal it did
+not ask for, and two captures of the display in a row are the same.
 
     python3 scripts/screenshots/capture.py <kit.properties> <output directory>
 
@@ -28,6 +29,9 @@ FOLDER = "taskboard"
 BOARD = "src/main/kotlin/taskboard/Board.kt"
 TASK = "src/main/kotlin/taskboard/Task.kt"
 COMMANDS = 12
+# What the settings page shows as the server: the public demo, where a reader would host. The
+# session itself is on the local selvaged, chosen when Ada hosted.
+SHOWN_SERVER = "wss://selvage-demo.dontblameme.dev"
 
 PROJECT = {
     "settings.gradle.kts": 'rootProject.name = "taskboard"\n',
@@ -81,8 +85,11 @@ data class Task(
 
 import java.time.LocalDate
 
-/** The board: every task, and how many each column may hold at once. */
-class Board(private val limits: Map<Status, Int> = mapOf(Status.IN_PROGRESS to 3, Status.REVIEW to 2)) {
+/** How many tasks a column may hold at once. */
+val defaultLimits = mapOf(Status.IN_PROGRESS to 3, Status.REVIEW to 2)
+
+/** The board: every task, and the limits its columns keep. */
+class Board(private val limits: Map<Status, Int> = defaultLimits) {
     private val tasks = linkedMapOf<Int, Task>()
     private var nextId = 1
 
@@ -92,13 +99,14 @@ class Board(private val limits: Map<Status, Int> = mapOf(Status.IN_PROGRESS to 3
         return task
     }
 
-    fun column(status: Status): List<Task> = tasks.values.filter { it.status == status }
+    fun column(status: Status): List<Task> =
+        tasks.values.filter { it.status == status }
 
     fun move(id: Int, to: Status): Result<Task> {
-        val task = tasks[id] ?: return Result.failure(NoSuchElementException("no task $id"))
+        val task = tasks[id] ?: return refuse("no task $id")
         val limit = limits[to]
         if (limit != null && column(to).size >= limit) {
-            return Result.failure(IllegalStateException("${to.title} is full ($limit)"))
+            return refuse("${to.title} is full ($limit)")
         }
         val moved = task.copy(status = to)
         tasks[id] = moved
@@ -110,6 +118,9 @@ class Board(private val limits: Map<Status, Int> = mapOf(Status.IN_PROGRESS to 3
 
     fun overdue(today: LocalDate = LocalDate.now()): List<Task> =
         tasks.values.filter { it.isOverdue(today) }.sortedBy { it.due }
+
+    private fun refuse(why: String): Result<Task> =
+        Result.failure(IllegalStateException(why))
 }
 """,
     "src/main/kotlin/taskboard/Main.kt": """package taskboard
@@ -123,6 +134,7 @@ fun main() {
     board.add("Fix the login redirect", due = today.minusDays(1))
     board.add("Review the caching change")
     board.move(2, Status.IN_PROGRESS)
+    board.assign(2, "Grace")
 
     for (status in Status.entries) {
         println("${status.title}:")
@@ -180,7 +192,7 @@ class BoardTest {
 
 # Ada adds a line to `move` while Grace has `column(to).size >= limit` selected.
 TYPED = "        if (to == task.status) return Result.success(task)\n"
-TYPED_AFTER = "        val task = tasks[id] ?: return Result.failure(NoSuchElementException(\"no task $id\"))\n"
+TYPED_AFTER = "        val task = tasks[id] ?: return refuse(\"no task $id\")\n"
 SELECTED = "column(to).size >= limit"
 STILL_SAMPLES = 3
 
@@ -216,6 +228,11 @@ def write_jdk_table(name, ide):
     )
 
 
+def home_of(name):
+    """The IDE's home directory is its own sandbox, which it shows as `~`."""
+    return [f"-Duser.home={e2e.RUN / name}"]
+
+
 def frame(ide):
     return subprocess.run(
         ["import", "-display", ide.display, "-window", "root", "ppm:-"], capture_output=True, timeout=30, check=True
@@ -223,13 +240,17 @@ def frame(ide):
 
 
 def settled(ide, modal=False):
-    """Smart mode and nothing in the background; no modal dialog unless the scene opens its own."""
+    """
+    Smart mode, nothing in the background and the open file analysed; no modal dialog unless the scene
+    opens its own.
+    """
 
     def check():
         state = ide.state()
-        return state["smart"] and state["busy"] == 0 and (modal is None or state["modal"] == modal) and state
+        quiet = state["smart"] and state["busy"] == 0 and state["analyzed"]
+        return quiet and (modal is None or state["modal"] == modal) and state
 
-    return e2e.wait_for(f"{ide.name} settles (smart, idle, modal={modal})", check, timeout=300)
+    return e2e.wait_for(f"{ide.name} settles (smart, idle, analysed, modal={modal})", check, timeout=300)
 
 
 def capture(ide, out):
@@ -345,6 +366,7 @@ def scene_actions(host, out):
 
 
 def scene_settings(host, out):
+    host.ask(op="settings", serverUrl=SHOWN_SERVER)
     host.ask(op="settingsPage")
     e2e.wait_for(
         "the Settings dialog is open",
@@ -389,11 +411,11 @@ def main():
     host = guest = None
     try:
         base = e2e.start_selvaged()
-        project = e2e.RUN / FOLDER
+        project = e2e.RUN / "host" / FOLDER
         write_project(project, Path(kit["ide"]))
         write_jdk_table("host", Path(kit["ide"]))
-        host = e2e.Ide("host", kit, project)
-        guest = e2e.Ide("guest", kit)
+        host = e2e.Ide("host", kit, project, vm_options=home_of("host"))
+        guest = e2e.Ide("guest", kit, vm_options=home_of("guest"))
         host.connect()
         guest.connect()
         host.ask(op="settings", displayName="Ada", serverUrl=base, cursorLabel="floating")
