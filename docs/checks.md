@@ -64,3 +64,21 @@ ImageMagick is installed.
 Real IDEs are driven this way rather than through the Robot server or the Starter framework because
 the commands' questions are the plugin's own, so answering them through the plugin's prompt seam is
 exact, and the test needs nothing from the network once the IDE is in `~/.gradle`.
+
+## The Marketplace screenshots
+
+```sh
+SELVAGE_SELVAGED=/path/to/selvaged scripts/screenshots/capture.sh
+```
+
+A manual step, run inside `nix develop` when the plugin's look changes, and never part of the
+gate. It reuses the end-to-end test's pieces: two real IDEs at 1280×800 on their own Xvfb
+displays, sandboxes under `.tmp/screenshots/`, and the driver, which also stages a scene (a frame
+filling its display, balloons gone, a tool window, a menu or the settings page). Ada hosts a small
+Kotlin project the script writes, with the IDE's own runtime as its JDK; Grace joins from the
+invite. A scene is captured with `import -window root` once the IDE is in smart mode with nothing
+in the background and two captures in a row agree. The five images go to
+`docs/images/marketplace/`, recompressed losslessly with optipng, each under 1 MB.
+
+An IDE error the plugin logged on the way is cleared from the status bar before a capture, and the
+script prints it as a warning; a warning is a defect to fix, not a step of the run.
