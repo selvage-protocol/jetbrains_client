@@ -1,6 +1,7 @@
 package dev.dontblameme.selvage.intellij.e2e
 
-import com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerEx
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerImpl
 import com.intellij.diagnostic.MessagePool
 import com.intellij.ide.ActivityTracker
 import com.intellij.ide.projectView.ProjectView
@@ -245,12 +246,16 @@ object Stage {
         return emptyMap()
     }
 
-    /** Whether the file in front of each project has been through the IDE's analysis, so its marks are drawn. */
+    /**
+     * Whether the file in front of each project has been through every pass of the IDE's analysis,
+     * inspections included, so the editor's marks and its corner widget are final.
+     */
     private fun analyzed(project: Project): Boolean =
         ReadAction.compute<Boolean, RuntimeException> {
             val file = FileEditorManager.getInstance(project).selectedTextEditor?.virtualFile
             val psi = file?.let { PsiManager.getInstance(project).findFile(it) }
-            psi == null || DaemonCodeAnalyzerEx.getInstanceEx(project).isErrorAnalyzingFinished(psi)
+            val daemon = DaemonCodeAnalyzer.getInstance(project) as DaemonCodeAnalyzerImpl
+            psi == null || daemon.isAllAnalysisFinished(psi)
         }
 
     /**
