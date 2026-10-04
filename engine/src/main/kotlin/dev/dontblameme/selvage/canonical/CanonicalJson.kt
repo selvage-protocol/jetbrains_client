@@ -13,7 +13,12 @@ import java.nio.charset.StandardCharsets
  * The writer produces the one form §2 fixes, so equal values are equal bytes.
  */
 object CanonicalJson {
-    const val MAX_DEPTH = 64
+    /**
+     * The most arrays and objects one value may open inside one another: serde_json's recursion
+     * limit, which the reference client and server read with, so a receiver here gives their verdict
+     * on a deep unknown member (`CANONICAL.md` §4) rather than a stricter one.
+     */
+    const val MAX_DEPTH = 127
 
     fun parse(bytes: ByteArray): JsonValue {
         val text =
@@ -181,11 +186,10 @@ object CanonicalJson {
         private fun fail(what: String): Nothing = throw MalformedJson("$what at $pos")
 
         fun value(depth: Int): JsonValue {
-            if (depth > MAX_DEPTH) fail("nesting too deep")
             if (pos >= s.length) fail("unexpected end")
             return when (s[pos]) {
-                '{' -> obj(depth)
-                '[' -> arr(depth)
+                '{' -> obj(nested(depth))
+                '[' -> arr(nested(depth))
                 '"' -> JsonValue.Str(string())
                 't' -> literal("true", JsonValue.Bool(true))
                 'f' -> literal("false", JsonValue.Bool(false))
@@ -201,6 +205,12 @@ object CanonicalJson {
             if (!s.startsWith(word, pos)) fail("unexpected token")
             pos += word.length
             return value
+        }
+
+        /** [depth] containers already hold this one. */
+        private fun nested(depth: Int): Int {
+            if (depth >= MAX_DEPTH) fail("nesting too deep")
+            return depth
         }
 
         private fun obj(depth: Int): JsonValue.Obj {

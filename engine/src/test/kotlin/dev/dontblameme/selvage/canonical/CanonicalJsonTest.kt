@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.canonical
 
+import dev.dontblameme.selvage.sealed.Payload
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -71,12 +72,23 @@ class CanonicalJsonTest {
         assertFailsWith<MalformedJson> { CanonicalJson.parseObject("[1]") }
     }
 
+    /** serde_json's verdicts: 127 containers inside one another read, a 128th does not. */
     @Test
-    fun `bounds nesting`() {
-        CanonicalJson.parse("[".repeat(CanonicalJson.MAX_DEPTH) + "]".repeat(CanonicalJson.MAX_DEPTH))
-        assertFailsWith<MalformedJson> {
-            CanonicalJson.parse("[".repeat(CanonicalJson.MAX_DEPTH + 2) + "]".repeat(CanonicalJson.MAX_DEPTH + 2))
+    fun `bounds nesting where the reference reader does`() {
+        fun arrays(n: Int) = "[".repeat(n) + "]".repeat(n)
+
+        fun objects(n: Int) = "{\"x\":".repeat(n - 1) + "{\"x\":1}" + "}".repeat(n - 1)
+        for (shape in listOf(::arrays, ::objects)) {
+            CanonicalJson.parse(shape(127))
+            assertFailsWith<MalformedJson> { CanonicalJson.parse(shape(128)) }
         }
+    }
+
+    @Test
+    fun `a sealed payload's unknown member is read at the reference reader's depth`() {
+        val deep = "{\"x\":".repeat(125) + "[1]" + "}".repeat(125)
+        val holds = Payload.read(3, """{"holds":["a.txt"],"later":$deep}""".toByteArray())
+        assertEquals(listOf("a.txt"), (holds as? Payload.Holds)?.holds)
     }
 
     @Test
