@@ -94,7 +94,8 @@ private class SessionWidget(
 ) : TextWidget(project, StatusWidgets.SESSION_ID) {
     override fun getText(): String = StatusWidgets.sessionText(project) ?: ""
 
-    override fun getTooltipText(): String = "Selvage: ${getText()}"
+    override fun getTooltipText(): String =
+        SelvageService.get().sessionFor(project)?.statusTooltip() ?: "Selvage: ${getText()}"
 
     override fun getClickConsumer(): Consumer<MouseEvent> = Consumer { StatusWidgets.showMenu(project, it.component) }
 }

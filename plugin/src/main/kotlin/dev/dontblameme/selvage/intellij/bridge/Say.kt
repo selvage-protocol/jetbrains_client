@@ -148,6 +148,9 @@ object Say {
     fun unlistedOpened(path: String) =
         "Selvage: $path is not in the room, so it is not shared. Save a copy outside the room's folder to keep it."
 
+    fun unlistedSaved(path: String) =
+        "Selvage: $path is not in the room, so this save was not shared. Save a copy outside the room's folder to keep it."
+
     fun mirrorOverCapacityOne(path: String) =
         "Selvage: the room lists more files than this window mirrors; $path is left out."
 
@@ -157,7 +160,12 @@ object Say {
     ) =
         "Selvage: the room lists more files than this window mirrors; $count of them are left out, starting with $first."
 
-    fun mirrorWriteFailedOne(why: String) = "Selvage: one of the room's files could not be written to disk: $why."
+    fun mirrorWriteFailedOne(path: String) = "Selvage: one of the room's files could not be written to disk: $path."
+
+    fun mirrorWriteFailed(
+        count: String,
+        first: String,
+    ) = "Selvage: $count of the room's files could not be written to disk, starting with $first."
 
     fun listingCutPaths() =
         "Selvage: this window shares more paths than one room listing carries, so some of its files are not in the room."

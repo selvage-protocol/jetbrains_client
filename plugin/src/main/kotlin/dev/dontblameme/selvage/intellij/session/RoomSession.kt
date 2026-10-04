@@ -68,6 +68,7 @@ class RoomSession(
     private var peers: List<WirePeer> = engine.peers()
     private var documents: List<String> = engine.openSet()
     private var granted: List<String> = engine.listing()
+    private var listedBefore: Set<String> = emptySet()
     private var hostName = ""
     private var reconnecting = false
     private var awayGraceMs = 0L
@@ -87,7 +88,8 @@ class RoomSession(
     private var expectedEcho: Pair<Editor, Int>? = null
 
     private val refusedSeeds = HashSet<String>()
-    private val unlistedSaid = HashSet<String>()
+    private val unlistedSaid = LinkedHashSet<String>()
+    private val unlistedSaved = LinkedHashSet<String>()
     private val dropped = HashSet<String>()
     private val waitingForText = HashSet<String>()
     private val fetches = HashMap<String, () -> Unit>()
@@ -102,6 +104,9 @@ class RoomSession(
     private val fetchAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val fetchedOnly = HashSet<String>()
     private var keepMirror = false
+
+    /** The open people lists, each drawn again (the key) when membership moves, or closed (the value). */
+    val pickers = LinkedHashMap<() -> Unit, () -> Unit>()
 
     /** Called once the session is over, whichever way it ended. */
     val onFinished = CopyOnWriteArrayList<(RoomSession) -> Unit>()
@@ -213,6 +218,20 @@ class RoomSession(
             .messageBus
             .connect(this)
             .subscribe(SelvageSettings.CHANGED, SelvageSettings.Listener { settingsChanged() })
+        if (!isHost) {
+            ApplicationManager
+                .getApplication()
+                .messageBus
+                .connect(this)
+                .subscribe(
+                    com.intellij.openapi.fileEditor.FileDocumentManagerListener.TOPIC,
+                    object : com.intellij.openapi.fileEditor.FileDocumentManagerListener {
+                        override fun beforeDocumentSaving(document: Document) {
+                            FileDocumentManager.getInstance().getFile(document)?.let(::saving)
+                        }
+                    },
+                )
+        }
         for (file in FileEditorManager.getInstance(project).openFiles) opened(file)
         if (!isHost) applyListing(granted)
         openFromRoom()
@@ -247,6 +266,25 @@ class RoomSession(
         return identity()
     }
 
+    /** The session row's tooltip, in VS Code's words: why it reads what it reads, or who and what is in the room. */
+    fun statusTooltip(): String {
+        if (reconnecting) return RECONNECTING_TOOLTIP
+        if (awayDeadline != null) return Words.hostAwaySentence(hostName, awayGraceMs.toDouble())
+        val side =
+            when {
+                engine.ownRole() == null -> "Waiting for the host in"
+                isHost -> "Hosting"
+                engine.ownRole() == Role.VIEWER -> "Viewer in"
+                else -> "Guest in"
+            }
+        return listOf(
+            "$side this session",
+            "In the room: ${summarise(peers.map { it.displayName } + "you")}",
+            "Documents the room offers: ${summarise(documents)}",
+            "Shared from this window: ${summarise(sync.paths())}",
+        ).joinToString("\n")
+    }
+
     fun isHostAway(): Boolean = awayDeadline != null
 
     fun isReconnecting(): Boolean = reconnecting
@@ -265,6 +303,9 @@ class RoomSession(
     fun followingId(): String? = followingPeerId
 
     fun listed(): List<String> = granted
+
+    /** The room's listing named [path] and the one that replaced it does not: the host stopped sharing it. */
+    fun leftListing(path: String): Boolean = path in listedBefore && path !in granted
 
     fun offered(): List<String> = Grant.grantUnion(granted, documents).filter { it !in dropped }
 
@@ -318,6 +359,7 @@ class RoomSession(
                 peers = event.peers
                 rememberHost()
                 if (awayDeadline != null && peers.any { engine.rolesBySeat()[it.peerId] == Role.HOST }) clearHostAway()
+                pickers.keys.toList().forEach { it() }
                 val following = followingPeerId
                 if (following != null) {
                     val peer = peers.firstOrNull { it.peerId == following }
@@ -332,6 +374,7 @@ class RoomSession(
             }
 
             is SessionEvent.Listing -> {
+                listedBefore = granted.toHashSet()
                 granted = event.paths
                 if (!isHost) applyListing(event.paths)
             }
@@ -369,6 +412,7 @@ class RoomSession(
                 Notifier.error(project, Invites.sessionErrorSentence(event.error.message, event.error.code))
             }
         }
+        for (path in fetches.keys.toList()) if (engine.has(path)) fetches.remove(path)?.invoke()
         sayViewerOnce()
         followTick()
         retryGoTo()
@@ -474,7 +518,7 @@ class RoomSession(
         val room = mirror ?: return
         if (!room.accepts(path)) return
         if (path !in granted && path !in documents && !engine.has(path)) {
-            if (unlistedSaid.add(path)) Notifier.warn(project, Say.unlistedOpened(path))
+            if (noteUnlisted(unlistedSaid, path)) Notifier.warn(project, Say.unlistedOpened(path))
             return
         }
         if (!engine.has(path) && document.textLength > 0) {
@@ -483,6 +527,28 @@ class RoomSession(
             return
         }
         sync.bind(path, document, seed = false)
+    }
+
+    /**
+     * A save writes the mirror file even when the room has no path for it, since the editor writes
+     * what it is told to; the sentence is the honest half of that, said once per path.
+     */
+    private fun saving(file: VirtualFile) {
+        if (finished || mirror == null) return
+        val path = pathOf(file) ?: return
+        if (path == Mirror.MARKER || path in offered()) return
+        if (noteUnlisted(unlistedSaved, path)) Notifier.warn(project, Say.unlistedSaved(path))
+    }
+
+    /** Once per path, and never more paths remembered than [MAX_UNLISTED_WARNINGS]: the oldest goes first. */
+    private fun noteUnlisted(
+        warned: LinkedHashSet<String>,
+        path: String,
+    ): Boolean {
+        if (path in warned) return false
+        if (warned.size >= MAX_UNLISTED_WARNINGS) warned.remove(warned.first())
+        warned.add(path)
+        return true
     }
 
     private fun arrive(path: String) {
@@ -515,6 +581,17 @@ class RoomSession(
                     Say.mirrorOverCapacityOne(report.overCapacity.first())
                 } else {
                     Say.mirrorOverCapacity(report.overCapacity.size.toString(), report.overCapacity.first())
+                },
+            )
+        }
+        if (report.refused.isNotEmpty()) {
+            val first = report.refused.first()
+            Notifier.warn(
+                project,
+                if (report.refused.size == 1) {
+                    Say.mirrorWriteFailedOne(first)
+                } else {
+                    Say.mirrorWriteFailed(report.refused.size.toString(), first)
                 },
             )
         }
@@ -606,18 +683,42 @@ class RoomSession(
             done(true)
             return
         }
-        fetches[path] = {
-            fetchAlarm.cancelAllRequests()
+        // A read that has to ask the room says so while it waits: without it the file fills when
+        // the wait is over and nothing said it was ever loading.
+        val waited = java.util.concurrent.CompletableFuture<Unit>()
+        lateinit var timeout: Runnable
+        val arrived = {
+            fetchAlarm.cancelRequest(timeout)
+            waited.complete(Unit)
             finish()
             done(true)
         }
-        fetchAlarm.addRequest({
-            if (fetches.remove(path) != null) {
+        // Text the replica holds at the deadline is the room's too: a first sync need carry no edit.
+        timeout =
+            Runnable {
+                if (fetches.remove(path) == null) return@Runnable
+                if (!finished && engine.has(path)) {
+                    arrived()
+                    return@Runnable
+                }
+                waited.complete(Unit)
                 fetchedOnly.remove(path)
-                if (!finished && !engine.has(path)) Notifier.warn(project, Say.stillEmpty(path))
+                when {
+                    finished -> {}
+
+                    leftListing(path) -> {
+                        Notifier.error(project, Say.couldNotFetch(path, Say.leftListingNotice(path)))
+                    }
+
+                    else -> {
+                        Notifier.warn(project, Say.stillEmpty(path))
+                    }
+                }
                 done(false)
             }
-        }, FETCH_TIMEOUT_MS)
+        fetches[path] = arrived
+        fetchAlarm.addRequest(timeout, FETCH_TIMEOUT_MS)
+        Notifier.progress(project, Say.fetching(path), waited, FETCH_TIMEOUT_MS + 1_000L)
     }
 
     // --- the host's listing -------------------------------------------------------------------
@@ -915,6 +1016,8 @@ class RoomSession(
         finished = true
         leaving = true
         stopEngine()
+        // A list left open would offer people in a room this window has left.
+        pickers.values.toList().forEach { it() }
         presence.clear()
         sync.viewer = false
         engine.leave()
@@ -951,5 +1054,25 @@ class RoomSession(
         const val SELECTION_INTERVAL_MS = 100
         const val GRANT_REFRESH_MS = 250
         const val FETCH_TIMEOUT_MS = 5000
+
+        const val RECONNECTING_TOOLTIP = "The connection dropped; trying to rejoin the room."
+
+        /** How many names a tooltip lists before it counts the rest: the room's lists are a stranger's input. */
+        const val MAX_TOOLTIP_ENTRIES = 20
+
+        fun summarise(names: List<String>): String {
+            if (names.isEmpty()) return "none"
+            val shown = names.take(MAX_TOOLTIP_ENTRIES).joinToString(", ")
+            return if (names.size >
+                MAX_TOOLTIP_ENTRIES
+            ) {
+                "$shown, … and ${names.size - MAX_TOOLTIP_ENTRIES} more"
+            } else {
+                shown
+            }
+        }
+
+        /** How many paths the not-in-the-room notices remember (`MAX_UNLISTED_WARNINGS`). */
+        const val MAX_UNLISTED_WARNINGS = 500
     }
 }

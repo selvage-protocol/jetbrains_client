@@ -4,9 +4,14 @@ import com.intellij.notification.Notification
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 /**
  * The "Selvage" notification group: every refusal and notice is one of the shared sentences, shown
@@ -32,6 +37,36 @@ object Notifier {
 
     /** What was said, for a reader that has to know (a test, the participants view). */
     val listeners = CopyOnWriteArrayList<(Said) -> Unit>()
+
+    /** The waits shown, by title, for a reader that has to know. */
+    val progressListeners = CopyOnWriteArrayList<(String) -> Unit>()
+
+    /**
+     * A wait shown while it lasts, as VS Code's progress notice: the IDE's background task titled
+     * [title], over until [done] completes or [boundMs] passes.
+     */
+    fun progress(
+        project: Project,
+        title: String,
+        done: CompletableFuture<*>,
+        boundMs: Long,
+    ) {
+        ProgressManager.getInstance().run(
+            object : Task.Backgroundable(project, title, false) {
+                override fun run(indicator: ProgressIndicator) {
+                    indicator.isIndeterminate = true
+                    try {
+                        done.get(boundMs, TimeUnit.MILLISECONDS)
+                    } catch (e: java.util.concurrent.TimeoutException) {
+                        return
+                    } catch (e: java.util.concurrent.ExecutionException) {
+                        return
+                    }
+                }
+            },
+        )
+        progressListeners.forEach { it(title) }
+    }
 
     fun info(
         project: Project?,

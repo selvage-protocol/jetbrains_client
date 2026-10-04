@@ -21,6 +21,7 @@ import dev.dontblameme.selvage.intellij.bridge.Grant
 import dev.dontblameme.selvage.intellij.bridge.GrantFolder
 import dev.dontblameme.selvage.intellij.bridge.Invites
 import dev.dontblameme.selvage.intellij.bridge.Mirror
+import dev.dontblameme.selvage.intellij.bridge.PeerColours
 import dev.dontblameme.selvage.intellij.bridge.People
 import dev.dontblameme.selvage.intellij.bridge.Say
 import dev.dontblameme.selvage.intellij.bridge.Words
@@ -366,7 +367,9 @@ class SelvageService : Disposable {
             session.openRoomPath(paths.first())
             return
         }
-        prompts().choose(session.project, Say.OPEN_DOCUMENT, paths) { session.openRoomPath(paths[it]) }
+        prompts().choose(session.project, Say.OPEN_DOCUMENT, paths, "${paths.size} open in this room") {
+            session.openRoomPath(paths[it])
+        }
     }
 
     // --- Download a file from the room ---------------------------------------------------------
@@ -394,7 +397,11 @@ class SelvageService : Disposable {
                     listed.filter { it.startsWith("$trimmed/") }
                 }
             if (targets.isEmpty()) {
-                Notifier.warn(project, Say.noListedMatch(trimmed))
+                if (session.leftListing(trimmed)) {
+                    Notifier.error(project, Say.couldNotFetch(trimmed, Say.leftListingNotice(trimmed)))
+                } else {
+                    Notifier.warn(project, Say.noListedMatch(trimmed))
+                }
                 return
             }
             if (targets.size > MAX_FETCH_ALL_PATHS) {
@@ -416,7 +423,12 @@ class SelvageService : Disposable {
             return
         }
         val whole = "${Say.FETCH_WHOLE} (${if (listed.size == 1) "1 file" else "${listed.size} files"})"
-        prompts().choose(session.project, Say.FETCH, listOf(whole) + listed) { index ->
+        prompts().choose(
+            session.project,
+            Say.FETCH,
+            listOf(whole) + listed,
+            "${listed.size} listed in this room",
+        ) { index ->
             if (index == 0) {
                 if (prompts().confirm(session.project, Say.fetchAllQuestion(listed.size.toString()), Say.FETCH_WHOLE)) {
                     fetchAll(session, listed)
@@ -626,19 +638,18 @@ class SelvageService : Disposable {
             Notifier.warn(project, Say.joinFirst())
             return
         }
-        val rows = session.rows()
-        prompts().choose(session.project, session.identity(), rows.map(::rowText)) { index ->
-            val row = rows[index]
-            val acts = People.personActs(row)
-            prompts().choose(
-                session.project,
-                if (row.self) "${row.label} ${People.YOU_MARK}" else row.label,
-                acts.map {
-                    it.label
-                },
-            ) {
-                act(session, row.peerId, acts[it])
-            }
+        chooseLive(session, {
+            Menu(session.identity(), People.EVERYONE_LABEL, session.rows().map { rowText(it) to it })
+        }) { row ->
+            chooseLive(session, {
+                session.rows().firstOrNull { it.peerId == row.peerId }?.let { now ->
+                    Menu(
+                        if (now.self) "${now.label} ${People.YOU_MARK}" else now.label,
+                        People.whereLine(now.self, now.path),
+                        People.personActs(now).map { it.label to it },
+                    )
+                }
+            }) { act(session, row.peerId, it) }
         }
     }
 
@@ -658,6 +669,49 @@ class SelvageService : Disposable {
     private fun rowText(row: People.PersonRow): String =
         if (row.description.isEmpty()) row.label else "${row.label}  ${row.description}"
 
+    /** What a live list shows: its title, the line under it, and each row with what picking it means. */
+    private class Menu<T>(
+        val title: String,
+        val placeholder: String?,
+        val rows: List<Pair<String, T>>,
+    )
+
+    /**
+     * A list that follows the room: drawn again on every membership change while it is open, closed
+     * when it has nothing left to offer or the session ends.
+     */
+    private fun <T> chooseLive(
+        session: RoomSession,
+        menuOf: () -> Menu<T>?,
+        chosen: (T) -> Unit,
+    ) {
+        var menu = menuOf()?.takeIf { it.rows.isNotEmpty() } ?: return
+        var handle: Prompts.Chooser? = null
+        val fill: () -> Unit = {
+            val next = menuOf()
+            if (next == null || next.rows.isEmpty()) {
+                handle?.close()
+            } else {
+                menu = next
+                handle?.refill(next.title, next.placeholder, next.rows.map { it.first })
+            }
+        }
+        session.pickers[fill] = { handle?.close() }
+        handle =
+            prompts().choose(
+                session.project,
+                menu.title,
+                menu.rows.map { it.first },
+                menu.placeholder,
+                closed = { session.pickers.remove(fill) },
+            ) { index ->
+                menu.rows
+                    .getOrNull(index)
+                    ?.second
+                    ?.let(chosen)
+            }
+    }
+
     private fun pickParticipant(
         project: Project?,
         title: String,
@@ -674,20 +728,33 @@ class SelvageService : Disposable {
             Notifier.warn(project, Say.noOtherParticipants())
             return
         }
-        val chosen = { person: People.Person ->
-            if (person.path == null) {
-                val name = person.label
+        val chosen = { peerId: String, path: String? ->
+            if (path == null) {
+                val name =
+                    PeerColours.peerName(
+                        session.participants().firstOrNull { it.peerId == peerId }?.displayName ?: "",
+                        peerId,
+                    )
                 Notifier.warn(project, if (follow) Say.nothingToFollow(name) else Say.nothingToGoTo(name))
             } else {
-                then(person.peerId)
+                then(peerId)
             }
         }
         if (participants.size == 1) {
-            chosen(participants.first())
+            val only = participants.first()
+            chosen(only.peerId, only.path)
             return
         }
-        val rows = People.personRows(participants, session.followingId())
-        prompts().choose(session.project, title, rows.map(::rowText)) { chosen(participants[it]) }
+        chooseLive(session, {
+            Menu(
+                title,
+                PICK_A_PARTICIPANT,
+                People.personRows(session.participants(), session.followingId()).map {
+                    rowText(it) to
+                        it
+                },
+            )
+        }) { row -> chosen(row.peerId, row.path) }
     }
 
     fun goToParticipant(project: Project?) = pickParticipant(project, Say.GO_TO, follow = false) { current?.goTo(it) }
@@ -750,6 +817,9 @@ class SelvageService : Disposable {
 
     companion object {
         const val CLIENT = "selvage-jetbrains/0.1.0"
+
+        /** The participant pickers' placeholder. */
+        const val PICK_A_PARTICIPANT = "Pick a participant"
 
         /** The most paths one fetch holds at once (`MAX_FETCH_ALL_PATHS`). */
         const val MAX_FETCH_ALL_PATHS = 100
