@@ -9,8 +9,9 @@ import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.dsl.builder.toNullableProperty
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 
-/** Settings → Tools → Selvage: the same settings, words and defaults as the VS Code client's. */
+/** Settings → Tools → Selvage: the VS Code client's settings, with its defaults. */
 class SelvageConfigurable : BoundConfigurable("Selvage") {
     private val settings = SelvageSettings.get()
     private var serverUrl = settings.serverUrl
@@ -24,39 +25,31 @@ class SelvageConfigurable : BoundConfigurable("Selvage") {
             row("Server URL:") {
                 textField().bindText(::serverUrl).columns(COLUMNS_LARGE)
             }.rowComment(
-                "The server address to host on: in full, or a domain on its own (a domain alone " +
-                    "means the secure server). " +
-                    "Set it and hosting never asks. The Change the server command reports which address is in force.",
+                "The server you host on: a full address such as wss://example.org, or just the domain. " +
+                    "Left empty, hosting uses the last server you picked, or asks.",
             )
             row("Display name:") {
                 textField().bindText(::displayName).columns(COLUMNS_LARGE)
             }.rowComment(
-                "The name other participants see. At most 32 UTF-16 code units, so an emoji costs " +
-                    "two; a longer name is refused. " +
-                    "A change while a session is live renames this connection at once, and applies to " +
-                    "the next host or join.",
+                "The name others see. Up to 32 characters, and an emoji counts as two. " +
+                    "Changing it renames you in a live session too.",
             )
             row {
                 checkBox("Save a document the room changed").bindSelected(::autoSave)
             }.rowComment(
-                "Save a document the room changed, once the room has settled on it. With this " +
-                    "off, a remote edit leaves the " +
-                    "file on disk stale, with the editor's unsaved marker still on it.",
+                "Saves once the edits settle. Turned off, others' edits stay unsaved until you save.",
             )
             row {
                 checkBox("Open the room's first document on join").bindSelected(::openOnJoin)
             }.rowComment(
-                "Put the room's first document in an editor when a guest joins, and when a room " +
-                    "that was empty at join reports " +
-                    "its first document. Only the first; Open a document from the room lists every " +
-                    "path. A host is unaffected.",
+                "Open the rest from Tools | Selvage | Open a document from the room.",
             )
             row("Cursor label:") {
-                comboBox(SelvageSettings.CURSOR_LABELS).bindItem(::cursorLabel.toNullableProperty())
+                comboBox(SelvageSettings.CURSOR_LABELS, textListCellRenderer(::cursorLabelText))
+                    .bindItem(::cursorLabel.toNullableProperty())
             }.rowComment(
-                "Whether a remote peer's name is drawn at their cursor. \"floating\" and \"chip\" " +
-                    "each cover some of the text; " +
-                    "the full name is always in the caret's tooltip and in the participants view.",
+                "Shows a participant's name at their caret. Off keeps the code clear, and the name " +
+                    "is still in the caret's tooltip and the Selvage tool window.",
             )
         }
 
@@ -69,5 +62,15 @@ class SelvageConfigurable : BoundConfigurable("Selvage") {
             this.openOnJoin = this@SelvageConfigurable.openOnJoin
             this.cursorLabel = this@SelvageConfigurable.cursorLabel
         }
+    }
+
+    companion object {
+        /** How each stored `selvage.cursorLabel` value reads in the list. */
+        fun cursorLabelText(value: String?): String =
+            when (value) {
+                "floating" -> "Above the caret"
+                "chip" -> "Beside the caret"
+                else -> "Off"
+            }
     }
 }

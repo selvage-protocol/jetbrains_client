@@ -592,7 +592,7 @@ class RoomSession(
     private fun saving(file: VirtualFile) {
         if (finished || mirror == null) return
         val path = pathOf(file) ?: return
-        if (path == Mirror.MARKER || path in offered()) return
+        if (path in offered()) return
         if (noteUnlisted(unlistedSaved, path)) Notifier.warn(project, Say.unlistedSaved(path))
     }
 

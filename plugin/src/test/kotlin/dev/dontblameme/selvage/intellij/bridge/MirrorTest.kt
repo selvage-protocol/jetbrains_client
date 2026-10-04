@@ -20,8 +20,10 @@ class MirrorTest : TestCase() {
 
     fun testTheListingBecomesEmptyFilesAndBadNamesAreRefused() {
         val mirror = Mirror.mint(scratch.resolve("storage"), "room/1", "w")
-        assertEquals(scratch.resolve("storage/rooms/room-1/w"), mirror.root)
-        assertTrue(Files.isRegularFile(mirror.root.resolve(Mirror.MARKER)))
+        assertEquals(scratch.resolve("storage/rooms/room-1/w"), mirror.home)
+        assertEquals(scratch.resolve("storage/rooms/room-1/w/Selvage session"), mirror.root)
+        assertTrue("the marker is beside the copy", Files.isRegularFile(mirror.home.resolve(Mirror.MARKER)))
+        assertFalse("and not in it", Files.exists(mirror.root.resolve(Mirror.MARKER)))
         val report =
             mirror.materialise(
                 listOf(
@@ -40,6 +42,7 @@ class MirrorTest : TestCase() {
         assertEquals(listOf("app.iml"), report.withheld)
         assertEquals(0L, Files.size(mirror.root.resolve("src/b.kt")))
         assertFalse(Files.exists(scratch.resolve("storage/rooms/room-1/escape.txt")))
+        assertFalse(Files.exists(scratch.resolve("storage/rooms/room-1/w/escape.txt")))
     }
 
     fun testRunConfigurationsAreWithheldWhereverTheIdeReadsThem() {
@@ -58,6 +61,18 @@ class MirrorTest : TestCase() {
         val report = mirror.materialise(listOf("linked/x.txt"))
         assertEquals(listOf("linked/x.txt"), report.refused)
         assertFalse(Files.exists(outside.resolve("x.txt")))
+    }
+
+    fun testAMintThroughALinkAtTheCopysFolderIsRefused() {
+        val outside = Files.createDirectories(scratch.resolve("elsewhere"))
+        val home = Files.createDirectories(scratch.resolve("storage/rooms/r/w"))
+        Files.createSymbolicLink(home.resolve(Mirror.FOLDER), outside)
+        try {
+            Mirror.mint(scratch.resolve("storage"), "r", "w")
+            fail("minted through a link")
+        } catch (expected: java.io.IOException) {
+            assertEquals(0L, Files.list(outside).use { it.count() })
+        }
     }
 
     fun testAMintThroughALinkIsRefused() {
@@ -82,7 +97,7 @@ class MirrorTest : TestCase() {
         Files.createSymbolicLink(mirror.root.resolve("node_modules/foo"), outside)
         Files.createSymbolicLink(mirror.root.resolve("src/notes.txt"), outsideFile)
         mirror.remove()
-        assertFalse("the mirror is gone", Files.exists(mirror.root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertFalse("the mirror is gone", Files.exists(mirror.home, java.nio.file.LinkOption.NOFOLLOW_LINKS))
         assertEquals("kept\n", Files.readString(outside.resolve("index.js")))
         assertEquals("kept\n", Files.readString(outsideFile))
     }
@@ -99,11 +114,11 @@ class MirrorTest : TestCase() {
         val current = Mirror.mint(storage, "r", "current", pid = gone)
         val otherRoom = Mirror.mint(storage, "other", "dead", pid = gone)
         val foreign = Files.createDirectories(storage.resolve("rooms/r/foreign"))
-        val marker = Files.readString(live.root.resolve(Mirror.MARKER))
+        val marker = Files.readString(live.home.resolve(Mirror.MARKER))
         assertTrue(marker, marker.contains("\"created\":\""))
 
         assertEquals(listOf("dead"), Mirror.pruneRoom(storage, "r", "current"))
-        assertFalse(Files.exists(dead.root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertFalse(Files.exists(dead.home, java.nio.file.LinkOption.NOFOLLOW_LINKS))
         assertEquals("kept\n", Files.readString(outside.resolve("index.js")))
         for (kept in listOf(
             live.root,
@@ -125,7 +140,7 @@ class MirrorTest : TestCase() {
         assertTrue(Files.exists(mirror.root.resolve("b.txt")))
         assertTrue("the IDE's own project files stay", Files.exists(mirror.root.resolve(".idea/misc.xml")))
         mirror.remove()
-        assertFalse(Files.exists(mirror.root))
+        assertFalse(Files.exists(mirror.home))
     }
 
     /** The shapes Windows reads as somewhere else: a drive, a share, a root, a device, a stream, a stripped name. */
@@ -186,7 +201,7 @@ class MirrorTest : TestCase() {
         assertEquals(windowsShapes, report.refused)
         val written = Files.walk(scratch).use { walk -> walk.filter { Files.isRegularFile(it) }.toList() }
         assertEquals(
-            setOf(mirror.root.resolve(Mirror.MARKER), mirror.root.resolve("src/main.kt")),
+            setOf(mirror.home.resolve(Mirror.MARKER), mirror.root.resolve("src/main.kt")),
             written.toSet(),
         )
     }

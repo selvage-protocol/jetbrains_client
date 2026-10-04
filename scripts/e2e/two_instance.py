@@ -183,7 +183,7 @@ def start_display(name):
 
 
 class Ide:
-    def __init__(self, name, kit, project=None):
+    def __init__(self, name, kit, project=None, vm_options=()):
         self.name = name
         self.project = project
         self.seen = 0
@@ -224,6 +224,7 @@ class Ide:
                     # The first-run tour is a modal dialog; the room's changes wait while one is open.
                     "-Dide.experimental.ui.onboarding=false",
                 ]
+                + list(vm_options)
             )
             + "\n"
         )

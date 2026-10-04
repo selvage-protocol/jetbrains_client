@@ -80,8 +80,13 @@ gate. It reuses the end-to-end test's pieces: two real IDEs at 1280×800 on thei
 displays, sandboxes under `.tmp/screenshots/`, and the driver, which also stages a scene (a frame
 filling its display, balloons gone, a tool window, a menu or the settings page). Ada hosts a small
 Kotlin project the script writes, with the IDE's own runtime as its JDK; Grace joins from the
-invite. A scene is captured with `import -window root` once the IDE is in smart mode with nothing
-in the background and two captures in a row agree. The five images go to
+invite. Each IDE's home directory is its own sandbox, so the project reads as `~/taskboard` and no
+path of the machine taking the pictures shows. The sandboxed IDE has no licence, so the driver takes
+its trial button off the main toolbar, which a licensed IDE does not show. The settings scene first
+sets the server to the public demo, which only a later host would use, since the session is already
+on the local `selvaged`. A scene is captured with `import -window root` once the IDE is in smart
+mode with nothing in the background, the open file has been analysed, and two captures in a row
+agree. The five images go to
 `docs/images/marketplace/`, recompressed losslessly with optipng, each under 1 MB.
 
 An IDE error the plugin logged on the way is cleared from the status bar before a capture, and the

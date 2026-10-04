@@ -1,6 +1,7 @@
 package dev.dontblameme.selvage.intellij
 
 import com.google.gson.JsonParser
+import dev.dontblameme.selvage.intellij.settings.SelvageConfigurable
 import dev.dontblameme.selvage.intellij.settings.SelvageSettings
 import junit.framework.TestCase
 import java.io.File
@@ -40,5 +41,10 @@ class SettingsTest : TestCase() {
         assertEquals("none", SelvageSettings.labelMode(null))
         assertEquals("chip", SelvageSettings.labelMode("chip"))
         assertEquals("floating", SelvageSettings.labelMode("floating"))
+    }
+
+    fun testEveryCursorLabelReadsAsItsOwnWords() {
+        val shown = SelvageSettings.CURSOR_LABELS.map { SelvageConfigurable.cursorLabelText(it) }
+        assertEquals(listOf("Off", "Above the caret", "Beside the caret"), shown)
     }
 }
