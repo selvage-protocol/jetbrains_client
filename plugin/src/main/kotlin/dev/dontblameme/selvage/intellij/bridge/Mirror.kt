@@ -1,6 +1,7 @@
 package dev.dontblameme.selvage.intellij.bridge
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
@@ -70,7 +71,9 @@ class Mirror private constructor(
         listing: List<String>,
         held: (String) -> Boolean,
     ): Report {
-        ApplicationManager.getApplication()?.assertIsNonDispatchThread()
+        if (ApplicationManager.getApplication()?.isDispatchThread == true) {
+            Logger.getInstance(Mirror::class.java).error("a listing was written into the mirror on the event thread")
+        }
         val applied = materialise(listing)
         val keep = listing.toHashSet()
         val removed = ArrayList<String>()
