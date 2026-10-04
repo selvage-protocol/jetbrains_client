@@ -28,7 +28,9 @@ class SelvageSessionTest {
     @AfterTest
     fun close() {
         sessions.forEach { it.leave() }
+        relay.settle()
         relay.shutdown()
+        assertEquals(emptyList(), relay.escaped.map { it.toString() }, "thrown into the transport")
     }
 
     private class Recorded {
@@ -48,9 +50,12 @@ class SelvageSessionTest {
         listener = { recorded.events.add(it) },
     )
 
-    private fun host(recorded: Recorded = Recorded()): SelvageSession =
+    private fun host(
+        recorded: Recorded = Recorded(),
+        read: (String) -> String? = { files[it] },
+    ): SelvageSession =
         SelvageSession
-            .host("ws://relay.test", HostContent({ listed }, { files[it] }), options("Ada", recorded))
+            .host("ws://relay.test", HostContent({ listed }, read), options("Ada", recorded))
             .also { sessions.add(it) }
             .also { relay.settle() }
 
@@ -236,5 +241,53 @@ class SelvageSessionTest {
         guest.leave()
         relay.settle()
         assertEquals(emptyList(), host.cursors())
+    }
+
+    @Test
+    fun `a path the host cannot read is declined, and the next one is still served`() {
+        var reads = 0
+        val seen = Recorded()
+        val host =
+            host(seen) {
+                reads += 1
+                if (it == "README.md") throw java.io.UncheckedIOException(java.io.IOException("unreadable"))
+                files[it]
+            }
+        val guest = join(host)
+        guest.open("README.md")
+        relay.settle()
+        // The pass that met the failed read finished: it said what moved.
+        assertEquals(SessionEvent.OpenSet(listOf("README.md")), seen.all<SessionEvent.OpenSet>().lastOrNull())
+        guest.open("src/main.rs")
+        relay.settle()
+        advance(300)
+        assertEquals("fn main() {}\n", guest.text("src/main.rs"))
+        assertEquals("", guest.text("README.md"))
+        assertEquals(2, reads, "each path is read once")
+        assertNull(host.ending)
+    }
+
+    @Test
+    fun `an error while handling a frame does not reach the transport`() {
+        var failed = 0
+        val host =
+            host {
+                if (it == "src/main.rs") {
+                    failed += 1
+                    throw StackOverflowError()
+                }
+                files[it]
+            }
+        val guest = join(host)
+        guest.open("src/main.rs")
+        relay.settle()
+        advance(300)
+        assertNull(host.ending)
+        guest.open("README.md")
+        relay.settle()
+        advance(300)
+        assertEquals("hello\n", guest.text("README.md"))
+        assertEquals(1, failed, "a path whose read failed is not read again")
+        assertEquals(emptyList(), relay.escaped.map { it.toString() })
     }
 }

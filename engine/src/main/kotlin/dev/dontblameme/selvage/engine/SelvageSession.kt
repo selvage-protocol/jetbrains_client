@@ -185,7 +185,7 @@ class SelvageSession private constructor(
     private var lastOpen: List<String> = emptyList()
     private var lastPeers: List<WirePeer> = emptyList()
     private var hostAway = false
-    private val declined = HashSet<String>()
+    private val readOnce = HashSet<String>()
 
     init {
         options.listener?.let(listeners::add)
@@ -391,9 +391,10 @@ class SelvageSession private constructor(
             }
         val listener =
             object : SocketListener {
-                override fun onText(text: String) = locked { if (attempt == generation) received(text) }
+                override fun onText(text: String) = handling { locked { if (attempt == generation) received(text) } }
 
-                override fun onBinary(bytes: ByteArray) = locked { if (attempt == generation) received(bytes) }
+                override fun onBinary(bytes: ByteArray) =
+                    handling { locked { if (attempt == generation) received(bytes) } }
 
                 override fun onClose(
                     code: Int,
@@ -556,6 +557,21 @@ class SelvageSession private constructor(
         }
     }
 
+    /**
+     * What the transport calls for one message, and what a timer runs. Nothing thrown in it
+     * reaches the transport, which would fail the socket (one frame must not end a session,
+     * §13.2), or the scheduler, which would drop the session's clock.
+     */
+    private fun handling(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            System.err.println("the session could not handle an event: $e")
+        } catch (e: StackOverflowError) {
+            System.err.println("the session could not handle an event: $e")
+        }
+    }
+
     private fun dropped(
         code: Int,
         reason: String,
@@ -583,7 +599,7 @@ class SelvageSession private constructor(
         val delay = options.reconnect.delay(attempts)
         attempts += 1
         events.add(SessionEvent.Reconnecting(attempts))
-        retryTimer = scheduler.schedule(delay) { retry() }
+        retryTimer = scheduler.schedule(delay) { handling { retry() } }
     }
 
     private fun retry() {
@@ -618,10 +634,13 @@ class SelvageSession private constructor(
         val session = peer ?: return
         if (ending != null || left) return
         val now = clock()
-        session.tick(now)
-        afterChange()
-        if (now >= tickAt) tickAt = now + tickWindow
-        arm(now)
+        try {
+            session.tick(now)
+            afterChange()
+        } finally {
+            if (now >= tickAt) tickAt = now + tickWindow
+            arm(now)
+        }
     }
 
     /** The next tick: the renewal grid, or sooner when the session owes something (§13.1, §13.2). */
@@ -631,7 +650,7 @@ class SelvageSession private constructor(
         if (left || ending != null || peer == null) return
         val deadline = peer?.nextDeadline()
         val at = if (deadline == null || deadline > tickAt) tickAt else deadline
-        timer = scheduler.schedule(maxOf(1, at - now)) { locked { pump() } }
+        timer = scheduler.schedule(maxOf(1, at - now)) { handling { locked { pump() } } }
     }
 
     /** Sends what the session queued and says what moved. */
@@ -673,14 +692,18 @@ class SelvageSession private constructor(
         val host = content ?: return
         val listed = session.listing.toHashSet()
         for (path in session.openSet()) {
-            if (path !in listed || session.has(path) || path in declined) continue
+            // Marked before the read: a path whose read fails, however it fails, is not read again.
+            if (path !in listed || session.has(path) || !readOnce.add(path)) continue
             val text =
                 try {
                     host.read(path)
                 } catch (e: IOException) {
                     null
+                } catch (e: RuntimeException) {
+                    // An unreadable or unnameable path (`UncheckedIOException`, `InvalidPathException`).
+                    null
                 }
-            if (text == null) declined.add(path) else session.insert(path, 0, text)
+            if (text != null) session.insert(path, 0, text)
         }
     }
 

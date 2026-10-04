@@ -9,6 +9,7 @@ import dev.dontblameme.selvage.wire.WireSocket
 import java.net.URI
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -25,6 +26,9 @@ class FakeRelay : Transport {
     private val submitted = AtomicLong()
     private val completed = AtomicLong()
     private val rooms = HashMap<String, Room>()
+
+    /** What a socket listener threw into the relay; a real transport fails the socket on it. */
+    val escaped = CopyOnWriteArrayList<Throwable>()
     private var next = 0
 
     private class Room(
@@ -196,6 +200,8 @@ class FakeRelay : Transport {
         thread.execute {
             try {
                 work()
+            } catch (e: Throwable) {
+                escaped.add(e)
             } finally {
                 completed.incrementAndGet()
             }
