@@ -2,6 +2,7 @@ package dev.dontblameme.selvage.intellij.session
 
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -11,19 +12,29 @@ import dev.dontblameme.selvage.engine.HostContent
 import dev.dontblameme.selvage.engine.SelvageSession
 import dev.dontblameme.selvage.engine.SessionOptions
 import dev.dontblameme.selvage.intellij.TestIde
+import dev.dontblameme.selvage.intellij.bridge.Mirror
+import dev.dontblameme.selvage.intellij.bridge.People
 import dev.dontblameme.selvage.intellij.bridge.Say
 import dev.dontblameme.selvage.intellij.bridge.Words
 import dev.dontblameme.selvage.intellij.settings.SelvageSettings
+import dev.dontblameme.selvage.intellij.ui.Notifier
 import dev.dontblameme.selvage.intellij.ui.Prompts
 import dev.dontblameme.selvage.peer.Keepalive
 import dev.dontblameme.selvage.peer.Selection
 import dev.dontblameme.selvage.sealed.Role
+import dev.dontblameme.selvage.wire.JdkTransport
+import dev.dontblameme.selvage.wire.SocketListener
+import dev.dontblameme.selvage.wire.Transport
+import dev.dontblameme.selvage.wire.WireSocket
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -43,15 +54,18 @@ class LiveSessionTest : HeavyPlatformTestCase() {
     private lateinit var said: Said
     private val engines = ArrayList<SelvageSession>()
 
-    private fun options(name: String) =
-        SessionOptions(
-            name,
-            handshakeTimeout = Duration.ofSeconds(5),
-            metaTimeout = Duration.ofSeconds(2),
-            requestTimeout = Duration.ofSeconds(5),
-            keepalive = Keepalive(30_000, renew, expire),
-            client = SelvageService.CLIENT,
-        )
+    private fun options(
+        name: String,
+        transport: Transport = JdkTransport(),
+    ) = SessionOptions(
+        name,
+        transport = transport,
+        handshakeTimeout = Duration.ofSeconds(5),
+        metaTimeout = Duration.ofSeconds(2),
+        requestTimeout = Duration.ofSeconds(5),
+        keepalive = Keepalive(30_000, renew, expire),
+        client = SelvageService.CLIENT,
+    )
 
     override fun setUp() {
         tolerated =
@@ -83,7 +97,7 @@ class LiveSessionTest : HeavyPlatformTestCase() {
             displayName = "Ada"
         }
         val service = SelvageService.get()
-        service.sessionOptions = ::options
+        service.sessionOptions = { options(it) }
         service.storage = scratch.resolve("storage")
         service.openMirror = { project }
     }
@@ -267,5 +281,230 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         val sentence = Words.roomGoneSentence(Words.endingReason(dev.dontblameme.selvage.peer.Ending.HOST_AWAY))
         assertEquals(Say.copyKept(sentence, mirror.root.toString()), said.last().sentence)
         assertTrue("the copy is kept", Files.isRegularFile(mirror.root.resolve("README.md")))
+    }
+
+    private fun hostEngine(
+        name: String,
+        listing: AtomicReference<List<String>>,
+        texts: Map<String, String>,
+    ): SelvageSession =
+        SelvageSession.host(base, HostContent({ listing.get() }, { texts[it] }), options(name)).also { engines.add(it) }
+
+    fun testAViewersDocumentsAreReadOnlyAndTheRoomStillReachesThem() {
+        val host = hostEngine("Grace", AtomicReference(listOf("README.md")), mapOf("README.md" to "hello\n"))
+        val viewer = SelvageSession.join(host.invite!!, options("Vic"), Role.VIEWER)
+        eventually("the viewer is committed") { viewer.ownRole() == Role.VIEWER }
+        eventually("the viewer has the listing") { viewer.listing() == listOf("README.md") }
+        val mirror = Mirror.mint(scratch.resolve("viewer"), "room").also { it.materialise(viewer.listing()) }
+        val session = RoomSession(viewer, project, null, mirror, joinedWith = host.invite)
+        try {
+            eventually("the role is said once, at warning") {
+                said.all.any { it.level == Notifier.Level.WARNING && it.sentence == Say.viewerReadOnly() }
+            }
+            val editor = session.openRoomPath("README.md")!!
+            eventually("the room's text fills the viewer's document") { editor.document.text == "hello\n" }
+            assertFalse("a viewer's document refuses a keystroke", editor.document.isWritable)
+            host.insert("README.md", 5, "!")
+            eventually("the host's edit reaches the read-only document") { editor.document.text == "hello!\n" }
+            assertFalse("and it stays read-only", editor.document.isWritable)
+            assertEquals(1, said.sentences().count { it == Say.viewerReadOnly() })
+            assertFalse(said.sentences().toString(), said.sentences().any { it.contains("would not apply") })
+            assertEquals("Viewer in this session", session.statusTooltip().lines().first())
+        } finally {
+            session.end()
+        }
+    }
+
+    fun testAGuestHearsWhatTheMirrorAndTheFetchCouldNotDo() {
+        val listing = AtomicReference(listOf("README.md", "gone.txt", "x", "x/y.txt"))
+        val host = hostEngine("Grace", listing, mapOf("README.md" to "hello\n", "gone.txt" to "", "x" to ""))
+        val progress = CopyOnWriteArrayList<String>()
+        val recordProgress: (String) -> Unit = { progress.add(it) }
+        Notifier.progressListeners.add(recordProgress)
+        try {
+            val service = SelvageService.get()
+            service.join(project, host.invite!!)
+            val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
+            val mirror = session.mirror!!
+            eventually("the one file the mirror could not write is said") {
+                said.sentences().contains(Say.mirrorWriteFailedOne("x/y.txt"))
+            }
+
+            service.fetch(project, "README.md")
+            eventually("the fetch lands") { said.sentences().contains(Say.fetched()) }
+            assertEquals("the wait was shown while it lasted", listOf(Say.fetching("README.md")), progress)
+            eventually(
+                "the fetched text is on disk",
+            ) { Files.readString(mirror.root.resolve("README.md")) == "hello\n" }
+
+            listing.set(listOf("README.md", "x", "x/y.txt", "z", "z/w.txt"))
+            host.listingChanged()
+            eventually("the guest's listing loses gone.txt") { !session.listed().contains("gone.txt") }
+            eventually("both refused files are counted") {
+                said.sentences().contains(Say.mirrorWriteFailed("2", "x/y.txt"))
+            }
+            service.fetch(project, "gone.txt")
+            assertEquals(Notifier.Level.ERROR, said.last().level)
+            assertEquals(Say.couldNotFetch("gone.txt", Say.leftListingNotice("gone.txt")), said.last().sentence)
+
+            val extra = mirror.root.resolve("extra.txt")
+            Files.writeString(extra, "mine\n")
+            val editor = openInEditor(extra)
+            eventually("opening a file the room does not list is said") {
+                said.sentences().contains(Say.unlistedOpened("extra.txt"))
+            }
+            repeat(2) { round ->
+                WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(0, "$round") }
+                FileDocumentManager.getInstance().saveDocument(editor.document)
+            }
+            assertEquals(
+                "a save the room does not hold is said once",
+                1,
+                said.sentences().count { it == Say.unlistedSaved("extra.txt") },
+            )
+            assertEquals(Notifier.Level.WARNING, said.all.first { it.sentence == Say.unlistedSaved("extra.txt") }.level)
+        } finally {
+            Notifier.progressListeners.remove(recordProgress)
+        }
+    }
+
+    fun testThePeopleListsFollowTheRoomWhileTheyAreOpen() {
+        val root = Files.createDirectories(Path.of(project.basePath!!))
+        Files.writeString(root.resolve("README.md"), "hello\n")
+        LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root)!!.refresh(false, true)
+        val service = SelvageService.get()
+        service.host(project)
+        val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
+        val bob = SelvageSession.join(session.invite()!!, options("Bob")).also { engines.add(it) }
+        val carol = SelvageSession.join(session.invite()!!, options("Carol")).also { engines.add(it) }
+        eventually("both guests are in the list") { session.participants().size == 2 }
+
+        prompts.holdNext = 1
+        service.goToParticipant(project)
+        val goTo = prompts.held.single()
+        assertEquals(SelvageService.PICK_A_PARTICIPANT, goTo.placeholder)
+        assertEquals(2, goTo.rows.size)
+        prompts.holdNext = 1
+        service.peers(project)
+        val everyone = prompts.held.last()
+        assertEquals(People.EVERYONE_LABEL, everyone.placeholder)
+        assertEquals(3, everyone.rows.size)
+
+        carol.leave()
+        eventually("a person who leaves is dropped from both open lists") {
+            goTo.rows.size == 1 && everyone.rows.size == 2
+        }
+        assertFalse(everyone.rows.toString(), everyone.rows.any { it.startsWith("Carol") })
+
+        prompts.holdNext = 1
+        everyone.pick(everyone.rows.indexOfFirst { it.startsWith("Bob") })
+        val menu = prompts.held.last()
+        assertEquals("Bob", menu.title)
+        assertEquals("not in a file yet", menu.placeholder)
+        bob.rename("Robert").get(5, TimeUnit.SECONDS)
+        eventually("the person's menu follows the rename") { menu.title == "Robert" }
+
+        bob.leave()
+        eventually("the lists close when nobody is left to pick") { !menu.open && !goTo.open }
+        assertTrue("no list is left listening", session.pickers.isEmpty())
+        prompts.confirms.add(true)
+        service.leave(project)
+    }
+
+    /** A transport whose sockets a test can cut, as a dropped connection: the engine hears a 1006 and nothing after. */
+    private class Severable(
+        private val inner: Transport = JdkTransport(),
+    ) : Transport {
+        private class Open(
+            val socket: WireSocket,
+            val listener: SocketListener,
+            val cut: java.util.concurrent.atomic.AtomicBoolean,
+        )
+
+        private val open = CopyOnWriteArrayList<Open>()
+
+        override fun open(
+            url: String,
+            timeout: Duration,
+            listener: SocketListener,
+        ): CompletableFuture<WireSocket> {
+            val cut =
+                java.util.concurrent.atomic
+                    .AtomicBoolean(false)
+            val relay =
+                object : SocketListener {
+                    override fun onText(text: String) {
+                        if (!cut.get()) listener.onText(text)
+                    }
+
+                    override fun onBinary(bytes: ByteArray) {
+                        if (!cut.get()) listener.onBinary(bytes)
+                    }
+
+                    override fun onClose(
+                        code: Int,
+                        reason: String,
+                    ) {
+                        if (cut.compareAndSet(false, true)) listener.onClose(code, reason)
+                    }
+                }
+            return inner.open(url, timeout, relay).thenApply { socket ->
+                socket.also { open.add(Open(it, listener, cut)) }
+            }
+        }
+
+        fun sever(): Int {
+            var count = 0
+            for (each in open) {
+                if (each.cut.compareAndSet(false, true)) {
+                    count += 1
+                    each.listener.onClose(1006, "cut by the test")
+                    each.socket.close()
+                }
+            }
+            open.clear()
+            return count
+        }
+    }
+
+    fun testAGuestWhoseSocketDropsReconnectsAndKeepsEditing() {
+        val host = hostEngine("Grace", AtomicReference(listOf("README.md")), mapOf("README.md" to "hello\n"))
+        val severable = Severable()
+        val service = SelvageService.get()
+        service.sessionOptions = { options(it, severable) }
+        service.join(project, host.invite!!)
+        val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
+        eventually("the host is named") { session.statusText() == Words.guestIdentity("Grace") }
+        prompts.choices.add(0)
+        service.openDocument(project)
+        eventually("the room's text fills the mirror file") {
+            FileEditorManager
+                .getInstance(project)
+                .selectedTextEditor
+                ?.document
+                ?.text == "hello\n"
+        }
+        val editor = FileEditorManager.getInstance(project).selectedTextEditor!!
+        val rows = CopyOnWriteArrayList<Pair<String, String>>()
+        session.changed.add { rows.add(session.statusText() to session.statusTooltip()) }
+
+        assertEquals("one socket was cut", 1, severable.sever())
+        eventually("the row says it is reconnecting") { rows.any { it.first == Say.RECONNECTING } }
+        assertEquals(RoomSession.RECONNECTING_TOOLTIP, rows.first { it.first == Say.RECONNECTING }.second)
+        eventually("and then names the host again", timeoutMs = 20_000) {
+            session.statusText() == Words.guestIdentity("Grace") && !session.isReconnecting()
+        }
+        assertSame("the session survived the drop", session, service.current)
+
+        host.insert("README.md", 0, "> ")
+        eventually("the host's edit reaches the re-seated guest") { editor.document.text == "> hello\n" }
+        WriteCommandAction.runWriteCommandAction(
+            project,
+        ) { editor.document.insertString(editor.document.textLength, "bye\n") }
+        eventually("the guest's keystroke reaches the host") { host.text("README.md") == "> hello\nbye\n" }
+        assertFalse(
+            said.sentences().toString(),
+            said.sentences().any { it.startsWith("Selvage: the connection ended") },
+        )
     }
 }
