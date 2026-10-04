@@ -52,6 +52,23 @@ class GrantFolderTest : TestCase() {
         fold: Boolean = false,
     ) = assertEquals(path, GrantFolder.Read.Refused(cause), folder(fold).read(path))
 
+    fun testALinkedGitBringsNoIgnoreRulesFromOutsideTheFolder() {
+        val linkedRoot = Files.createDirectories(scratch.resolve("linked-git"))
+        Files.writeString(linkedRoot.resolve("README.md"), "hello\n")
+        val elsewhere = Files.createDirectories(scratch.resolve("elsewhere-git/info"))
+        Files.writeString(elsewhere.resolve("exclude"), "README.md\n")
+        Files.createSymbolicLink(linkedRoot.resolve(".git"), elsewhere.parent)
+        val folder = GrantFolder(linkedRoot, false)
+        assertEquals(listOf("README.md"), folder.walk().paths)
+        val read = folder.read("README.md")
+        assertEquals("the read applies the rules the walk applied", GrantFolder.Read.Text("hello\n"), read)
+        val linkedInfo = Files.createDirectories(scratch.resolve("linked-info"))
+        Files.writeString(linkedInfo.resolve("README.md"), "hello\n")
+        Files.createDirectories(linkedInfo.resolve(".git"))
+        Files.createSymbolicLink(linkedInfo.resolve(".git/info"), elsewhere)
+        assertEquals(GrantFolder.Read.Text("hello\n"), GrantFolder(linkedInfo, false).read("README.md"))
+    }
+
     fun testAGrantedFileIsServedWithLfLineEndings() {
         assertEquals(GrantFolder.Read.Text("hello\nworld\n"), folder().read("README.md"))
         assertEquals(GrantFolder.Read.Text("fun main() {}\n"), folder().read("src/main.kt"))

@@ -56,9 +56,7 @@ class GrantFolder(
             }
         var dir = root
         val ignores = ArrayList<Grant.IgnoreSource>()
-        readIgnore(
-            root.resolve(".git").resolve("info").resolve("exclude"),
-        )?.let { ignores.add(Grant.IgnoreSource("", it)) }
+        rootExclude()?.let { ignores.add(Grant.IgnoreSource("", it)) }
         for ((index, segment) in segments.withIndex()) {
             val exact =
                 try {
@@ -103,6 +101,25 @@ class GrantFolder(
             return decodableText(bytes)?.let { Read.Text(Editing.toCrdt(it)) } ?: Read.Refused(Refusal.BINARY)
         }
         return Read.Refused(Refusal.MISSING)
+    }
+
+    /**
+     * `.git/info/exclude`, read only through a plain `.git` and a plain `info`, as the walk reads it:
+     * a linked `.git` brings no rules from outside the folder.
+     */
+    private fun rootExclude(): String? {
+        var dir = root
+        for (segment in listOf(".git", "info")) {
+            dir = dir.resolve(segment)
+            val attributes =
+                try {
+                    Files.readAttributes(dir, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                } catch (e: IOException) {
+                    return null
+                }
+            if (!attributes.isDirectory || attributes.isSymbolicLink) return null
+        }
+        return readIgnore(dir.resolve("exclude"))
     }
 
     private fun readIgnore(file: Path): String? =
