@@ -85,6 +85,8 @@ client differs from the VS Code one and why.
 - [Architecture](docs/architecture.md): the engine, the plugin and how a document stays in step.
 - [What is not here yet](docs/limits.md): the known gaps.
 - [Checks](docs/checks.md): the gate, the tests and the two-IDE end-to-end test.
+- [Releasing](docs/releasing.md): the release button, the change notes it requires and what to do
+  when a run stops part way.
 
 ## Licence
 

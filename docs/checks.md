@@ -9,13 +9,23 @@ SELVAGE_SELVAGED=/path/to/selvaged scripts/ci-local.sh all
 | Job | What it runs |
 |---|---|
 | `lint` | ktlint over the Kotlin sources, shellcheck over the scripts, actionlint over the workflows. CI runs all but actionlint, since the runner has no nix. |
-| `checks` | The engine's suite, with the differential test against real `yjs`; the engine against a real `selvaged`, alone and beside the TypeScript engine; the specification's peer runner, its corpus and its mutation census; the plugin's suite in a test IDE; the plugin in a test IDE against a real `selvaged`; the Plugin Verifier; the flake's sandboxed checks. |
+| `checks` | The release workflow's `dry_run` guard and the version bump's test, below; the engine's suite, with the differential test against real `yjs`; the engine against a real `selvaged`, alone and beside the TypeScript engine; the specification's peer runner, its corpus and its mutation census; the plugin's suite in a test IDE; the plugin in a test IDE against a real `selvaged`; the Plugin Verifier; the flake's sandboxed checks. |
 | `links` | lychee over `README.md` and `docs/`, with `lychee.toml`. |
 | `e2e` | Two real IDEs and the TypeScript engine against a real `selvaged`, below. |
 | `all` | All four. |
 
 CI (`.github/workflows/ci.yml`) runs the same steps on `ubuntu-24.04`, with the specification,
 the server and the VS Code client at their published `main`.
+
+## The release workflow's guards
+
+`scripts/check_dry_run_gating.py` reads `.github/workflows` back and refuses a workflow that declares
+a `dry_run` input and leaves a step after its plan step without a condition that excludes a dry
+run: the defect `actionlint` cannot see, because it is the condition a step does not carry. It is
+the sibling clients' copy, byte for byte, and `scripts/test_check_dry_run_gating.py` is its suite.
+`checks` runs both as the flake check `dry-run-gating`, and CI runs the same two files with pip's
+PyYAML. `scripts/test-bump-version.sh` runs `scripts/bump-version.sh` on a scratch copy of the tree
+and asserts that a bump writes the build's version and the client identity and no other file.
 
 ## Where the tests are
 
