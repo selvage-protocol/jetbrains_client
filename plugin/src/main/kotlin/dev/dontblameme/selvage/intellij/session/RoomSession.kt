@@ -192,10 +192,16 @@ class RoomSession(
         connection.subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
+                // The platform says a file opened from the editor's own coroutine, which is not a
+                // write-safe context and can run inside another task's modal progress. The bind
+                // brings the document to the room's text, so it waits for a write-safe turn.
                 override fun fileOpened(
                     source: FileEditorManager,
                     file: VirtualFile,
-                ) = opened(file)
+                ) = ApplicationManager.getApplication().invokeLater(
+                    { if (source.isFileOpen(file)) opened(file) },
+                    ModalityState.nonModal(),
+                )
 
                 override fun fileClosed(
                     source: FileEditorManager,
@@ -536,7 +542,7 @@ class RoomSession(
     }
 
     private fun opened(file: VirtualFile) {
-        if (finished) return
+        if (finished || !file.isValid) return
         val path = pathOf(file) ?: return
         val document = FileDocumentManager.getInstance().getDocument(file) ?: return
         bindDocument(path, document)
