@@ -20,13 +20,21 @@ import java.util.UUID
  * filled when a document is fetched, gone when the session is left. Ported from
  * `vscode_client/src/adapter/mirror.ts`; the marker carries the same fields (room, window, pid and
  * when it was made), and a room's copies whose process is gone are pruned as VS Code prunes them.
+ *
+ * Unlike VS Code's, the copy is one folder below the window's directory, named [FOLDER], and the
+ * marker sits beside it rather than in it: the IDE names a project after its folder, so the guest's
+ * window reads as a session rather than a window id, and the marker stays out of the project view.
  */
 class Mirror private constructor(
     val room: String,
     val window: String,
-    val root: Path,
+    /** The window's directory: the marker and the copy, and what [remove] deletes. */
+    val home: Path,
     private val windows: Boolean,
 ) {
+    /** The copy itself, the folder the guest's project is opened on. */
+    val root: Path = home.resolve(FOLDER)
+
     data class Report(
         val mirrored: List<String>,
         val refused: List<String>,
@@ -38,7 +46,10 @@ class Mirror private constructor(
     /** Whether [path] is one this mirror would hold a document at. */
     fun accepts(path: String): Boolean = isMirrorable(path) && !isWorkspaceConfigPath(path)
 
-    /** A granted path that names a plain file under the root on this OS, and not the marker. */
+    /**
+     * A granted path that names a plain file under the root on this OS, and not the marker's name:
+     * VS Code's copy holds its marker at its root, and a guest sees the same files in either client.
+     */
     private fun isMirrorable(path: String): Boolean =
         Grant.isGrantedPath(path) && !path.equals(MARKER, ignoreCase = true) && RoomPaths.isLocalPath(path, windows)
 
@@ -78,7 +89,7 @@ class Mirror private constructor(
         val keep = listing.toHashSet()
         val removed = ArrayList<String>()
         for (relative in filesUnder()) {
-            if (relative == MARKER || relative in keep || held(relative) || isWorkspaceConfigPath(relative)) continue
+            if (relative in keep || held(relative) || isWorkspaceConfigPath(relative)) continue
             val file = RoomPaths.under(root, relative, windows) ?: continue
             try {
                 Files.deleteIfExists(file)
@@ -104,11 +115,11 @@ class Mirror private constructor(
     }
 
     /**
-     * Deletes the mirror. Links are not followed: a link in the copy (a package linked in by hand) is
-     * removed as a link, and what it points at is left alone. What cannot be deleted is left in place
-     * and the rest still goes.
+     * Deletes the mirror, its marker with it. Links are not followed: a link in the copy (a package
+     * linked in by hand) is removed as a link, and what it points at is left alone. What cannot be
+     * deleted is left in place and the rest still goes.
      */
-    fun remove() = deleteTree(root)
+    fun remove() = deleteTree(home)
 
     private fun materialiseOne(path: String): Boolean {
         val segments = path.split('/')
@@ -169,6 +180,9 @@ class Mirror private constructor(
     companion object {
         const val MARKER = ".selvage-mirror.json"
 
+        /** The copy's folder under the window's directory, and so the name of the guest's project. */
+        const val FOLDER = "Selvage session"
+
         /** A room id as one path segment, the way the other clients' mirrors name it. */
         fun sanitiseRoom(room: String): String = room.replace(Regex("[^A-Za-z0-9_-]"), "-")
 
@@ -193,7 +207,10 @@ class Mirror private constructor(
 
         private val WORKSPACE_CONFIG_SUFFIXES = listOf(".iml", ".ipr", ".iws", ".run.xml")
 
-        /** Mints `<storage>/rooms/<room>/<window>/` and its marker, refusing to mint through a link. */
+        /**
+         * Mints `<storage>/rooms/<room>/<window>/`, its marker and the copy's folder in it, refusing to
+         * mint through a link.
+         */
         fun mint(
             storage: Path,
             room: String,
@@ -205,8 +222,9 @@ class Mirror private constructor(
             require(segment.isNotEmpty()) { "cannot mirror a room with no name in it" }
             val rooms = storage.resolve("rooms")
             val roomDir = rooms.resolve(segment)
-            val root = roomDir.resolve(window)
-            for (dir in listOf(storage, rooms, roomDir, root)) {
+            val home = roomDir.resolve(window)
+            val root = home.resolve(FOLDER)
+            for (dir in listOf(storage, rooms, roomDir, home, root)) {
                 val attributes = attributes(dir) ?: continue
                 if (!attributes.isDirectory || attributes.isSymbolicLink) {
                     throw IOException("refusing to mirror under $dir: not a plain directory")
@@ -222,8 +240,8 @@ class Mirror private constructor(
             val marker = "{\"room\":${jsonString(
                 room,
             )},\"window\":${jsonString(window)},\"pid\":$pid,\"created\":$created}\n"
-            Files.writeString(root.resolve(MARKER), marker)
-            return Mirror(room, window, root, windows)
+            Files.writeString(home.resolve(MARKER), marker)
+            return Mirror(room, window, home, windows)
         }
 
         /**

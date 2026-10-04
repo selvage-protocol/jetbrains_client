@@ -34,8 +34,8 @@ read from disk with every step of its path checked, so a link out of the folder 
 
 The invite question starts empty: the clipboard is not read. A link whose fragment names one of
 the two keys and not the other is refused before anything is dialled. The room opens as a new project window on a folder the plugin
-keeps under the IDE's system directory, `selvage/rooms/<room>/<window>`, holding one file per
-listed path. That project opens untrusted, in the IDE's safe mode, because its build files are the
+keeps under the IDE's system directory, `selvage/rooms/<room>/<window>/Selvage session`, holding
+one file per listed path. That project opens untrusted, in the IDE's safe mode, because its build files are the
 host's and joining a room is not agreeing to run them. When you join with a project already open,
 the IDE asks where to open the room unless you told it not to ask.
 

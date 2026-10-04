@@ -21,7 +21,9 @@ the last name given to the name question. **Change the server** reads and writes
 The answers to hosting's questions follow the same order as VS Code: the setting, then the
 remembered value, then one question.
 
-A guest's copy of the room lives under the IDE's system directory,
-`selvage/rooms/<room>/<window>`, with a `.selvage-mirror.json` marker. It is removed when the
-session ends, and kept when the room ends under you. When you join the same room again, the copies
-of it whose IDE is no longer running are removed, as VS Code removes them.
+A guest's copy of the room lives under the IDE's system directory, in
+`selvage/rooms/<room>/<window>/Selvage session`. The `.selvage-mirror.json` marker sits beside that
+folder rather than in it, so the project is named "Selvage session" and the marker stays out of the
+project view. The copy is removed when the session ends, and kept when the room ends under you. When
+you join the same room again, the copies of it whose IDE is no longer running are removed, as VS
+Code removes them.
