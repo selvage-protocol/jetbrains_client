@@ -191,10 +191,16 @@ class SelvageSession private constructor(
     private var ownName = options.displayName
     private var left = false
 
+    // Written under the lock and read from any thread without it.
+    @Volatile
     var invite: String? = null
         private set
+
+    @Volatile
     var roomId: String? = null
         private set
+
+    @Volatile
     var ending: SessionEnding? = null
         private set
     private var peerList: List<WirePeer> = emptyList()
