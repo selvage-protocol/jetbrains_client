@@ -332,6 +332,7 @@ class RoomSession(
     fun roomDocuments(): List<String> = engine.documents()
 
     fun people(): List<People.Person> {
+        ApplicationManager.getApplication().assertIsDispatchThread()
         val paths = HashMap<String, String>()
         val byClient = peers.associateBy { it.awarenessClientId }
         for (cursor in engine.cursors()) {
@@ -357,11 +358,17 @@ class RoomSession(
         return folder?.root?.let { RoomPaths.under(it, path) }
     }
 
-    /** Who is in [file], for the project view's badge. */
+    /**
+     * Who is in [file], for the project view's badge. The badge is drawn on a background thread, so it
+     * reads the people as they were when the event thread last drew the views, not the state itself.
+     */
     fun peopleIn(file: VirtualFile): List<People.Person> {
         val path = pathOf(file) ?: return emptyList()
-        return participants().filter { it.path == path }
+        return drawnPeople.filter { it.path == path }
     }
+
+    @Volatile
+    private var drawnPeople: List<People.Person> = emptyList()
 
     // --- the engine's events --------------------------------------------------------------------
 
@@ -1097,6 +1104,7 @@ class RoomSession(
     }
 
     fun fireChanged() {
+        if (!finished) drawnPeople = participants()
         changed.forEach { it() }
     }
 

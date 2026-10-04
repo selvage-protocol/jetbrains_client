@@ -318,6 +318,15 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         }
         assertFalse(said.sentences().toString(), said.sentences().any { it.startsWith("Selvage: could not open") })
 
+        val badge =
+            com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread<List<String>> {
+                com.intellij.openapi.application.ReadAction.compute<List<String>, RuntimeException> {
+                    session.peopleIn(FileDocumentManager.getInstance().getFile(editor.document)!!).map { it.label }
+                }
+            }
+        eventually("the badge is read off the event thread") { badge.isDone }
+        assertEquals("the badge names who is in the file", listOf("Bob"), badge.get())
+
         val refusal = Say.couldNotOpen("missing.txt", "the path is not one this window shares")
         bob.setCursor("missing.txt")
         eventually("the refusal is said") { said.sentences().contains(refusal) }
