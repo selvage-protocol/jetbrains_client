@@ -140,6 +140,11 @@ class RoomSession(
                         Notifier.warn(project, Say.divergence(path))
                     }
 
+                    override fun overBound(path: String) {
+                        val why = Say.refusal(GrantFolder.Refusal.TOO_LARGE) ?: return
+                        if (refusedSeeds.add(path)) Notifier.error(project, Say.wrap(Say.willNotShare(path, why) + "."))
+                    }
+
                     override fun saveFailed(
                         path: String,
                         why: String?,

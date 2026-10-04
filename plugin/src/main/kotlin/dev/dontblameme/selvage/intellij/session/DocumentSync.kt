@@ -14,6 +14,7 @@ import com.intellij.util.Alarm
 import dev.dontblameme.selvage.crdt.TextDelta
 import dev.dontblameme.selvage.intellij.bridge.Editing
 import dev.dontblameme.selvage.intellij.bridge.Editing.TextChange
+import dev.dontblameme.selvage.intellij.bridge.Grant
 
 /** The room's replica of the documents, as the editor sees it. Offsets are UTF-16 code units of LF text. */
 interface Replica {
@@ -61,6 +62,9 @@ class DocumentSync(
         fun applyRefused(path: String) {}
 
         fun divergence(path: String) {}
+
+        /** The document grew past what a session carries, so nothing of it is published until it shrinks. */
+        fun overBound(path: String) {}
 
         /** The document's file could not be written; [why] when the editor said. */
         fun saveFailed(
@@ -201,6 +205,10 @@ class DocumentSync(
         reports.localEdit(entry.path)
         moveSave(entry)
         val change = TextChange(event.offset, event.offset + event.oldLength, event.newFragment.toString())
+        if (overBound(entry)) {
+            entry.pending.add(change)
+            return
+        }
         // §7: a client writes whole code points. An edit whose boundary falls inside a character is
         // left to the sync, whose diff widens it, and one that would write half a character is refused.
         val whole = !Editing.splitsCharacter(entry.shadow, change) && !Editing.hasLoneSurrogate(change.text)
@@ -242,6 +250,7 @@ class DocumentSync(
                 applyRemote(entry, room)
                 return
             }
+            if (overBound(entry)) return
             val rebased = rebase(local, remote)
             if (Editing.hasLoneSurrogate(rebased.text) || Editing.splitsCharacter(room, rebased)) return@repeat
             if (replica.replaceIf(entry.path, room, rebased.start, rebased.end, rebased.text)) {
@@ -255,6 +264,19 @@ class DocumentSync(
         entry.pending.clear()
         entry.remote.clear()
         land(entry, replica.text(entry.path), null)
+    }
+
+    /**
+     * The size gate a host's first share passes, applied to the document at every change, as VS Code
+     * applies it: a document past the bound publishes nothing and is left as it is, rather than
+     * brought back to the room's text, until it is under the bound again.
+     */
+    private fun overBound(entry: Bound): Boolean {
+        val length = entry.document.textLength
+        if (length * 3L <= Grant.MAX_GRANT_FILE_BYTES) return false
+        if (!Grant.overFileBound(entry.document.text)) return false
+        reports.overBound(entry.path)
+        return true
     }
 
     private fun reconcile(entry: Bound) {

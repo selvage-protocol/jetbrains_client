@@ -231,6 +231,10 @@ class DocumentSyncTest : BasePlatformTestCase() {
             said.add("applyRefused $path")
         }
 
+        override fun overBound(path: String) {
+            said.add("overBound $path")
+        }
+
         override fun saveFailed(
             path: String,
             why: String?,
@@ -303,6 +307,30 @@ class DocumentSyncTest : BasePlatformTestCase() {
         } finally {
             document.setReadOnly(false)
         }
+    }
+
+    fun testADocumentTypedPastTheSizeBoundPublishesNothingUntilItShrinks() {
+        val reports = Recorded()
+        val bounded = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { false })
+        val document = document("hello\n")
+        bounded.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        val big = "x".repeat(dev.dontblameme.selvage.intellij.bridge.Grant.MAX_GRANT_FILE_BYTES)
+        type(document, 0, big)
+        settle()
+        assertEquals("hello\n", replica.text("a.txt"))
+        bounded.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "!"))
+        type(document, 0, "y")
+        bounded.syncAll()
+        settle()
+        assertEquals("nothing was published", emptyList<Editing.TextChange>(), replica.published)
+        assertEquals("the document is left as it is", "y" + big + "hello\n", document.text)
+        assertFalse(reports.said.isEmpty())
+        assertTrue(reports.said.toString(), reports.said.all { it == "overBound a.txt" })
+        type(document, 0, "small ", delete = big.length + 1)
+        settle()
+        assertEquals("under the bound again, the change is published", "small hello!\n", replica.text("a.txt"))
+        assertEquals("small hello!\n", document.text)
     }
 
     fun testAViewersDocumentIsReadOnlyAndTheRoomStillWritesIt() {
