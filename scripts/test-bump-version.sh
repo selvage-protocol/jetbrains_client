@@ -21,11 +21,12 @@ build=plugin/build.gradle.kts
 service=plugin/src/main/kotlin/dev/dontblameme/selvage/intellij/session/SelvageService.kt
 
 # A fresh copy of the working tree (what git tracks or would track), committed, so `git status`
-# names whatever a run wrote.
+# names whatever a run wrote. An entry ending in `/` is another repository checked out inside this
+# one, as CI's sibling checkouts under `.ci/` are, and is not part of the tree.
 fresh() {
   rm -rf "$scratch/tree"
   mkdir -p "$scratch/tree"
-  git -C "$repo_root" ls-files -z --cached --others --exclude-standard |
+  git -C "$repo_root" ls-files -z --cached --others --exclude-standard | grep -z -v '/$' |
     (cd "$repo_root" && xargs -0 cp --parents -t "$scratch/tree")
   git -C "$scratch/tree" init -q
   git -C "$scratch/tree" add -A
