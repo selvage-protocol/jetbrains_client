@@ -66,6 +66,12 @@ class Reader(
         private set
     private var byId: Map<String, List<Committed>> = emptyMap()
     val marks = HashMap<String, Long>()
+
+    /** Key ids an applied state has committed, whose marks are kept while the room's keys are. */
+    private val everCommitted = HashSet<String>()
+
+    /** Key ids announced since the last state; for those no state has committed, that state decides the mark. */
+    private val announcedOnly = HashSet<String>()
     var listing: List<String> = emptyList()
         private set
     val holds = HashMap<String, List<String>>()
@@ -149,6 +155,7 @@ class Reader(
         if (!Frames.authentic(roomId, envelope, key)) return refused(DropReason.BAD_SIGNATURE, envelope)
         if (replayed(id, envelope.counter)) return refused(DropReason.REPLAYED_COUNTER, envelope)
         advance(id, envelope.counter)
+        announcedOnly.add(id)
         return Verdict(null, id, envelope.kind, envelope.counter, plaintext, announcement)
     }
 
@@ -161,6 +168,10 @@ class Reader(
         next.sortBy { it.spelling }
         committed = next.associateByTo(LinkedHashMap()) { it.spelling }
         byId = next.groupBy { it.id }
+        // CANONICAL §6.1: an announced key's mark is held until the state that does not commit it.
+        everCommitted.addAll(byId.keys)
+        for (id in announcedOnly) if (id !in everCommitted) marks.remove(id)
+        announcedOnly.clear()
         listing = state.listing.filter(Payload::usablePath)
         issued = state.issued
     }

@@ -44,4 +44,51 @@ class ReaderTest {
             )
         for ((shape, plaintext) in bare) assertEquals(false, Reader.isContent(plaintext), shape)
     }
+
+    @Test
+    fun `an announced key's mark lasts until a state decides it, and a committed key's for good`() {
+        val roomId = "r-marks"
+        val roomKey = FrameCrypto.randomBytes(32)
+        val host = SessionKey.mint()
+        val reader = Reader(roomId, roomKey, host.public)
+        val frameKey = Frames.frameKey(roomId, roomKey)
+
+        fun announce(
+            key: SessionKey,
+            counter: Long = 1,
+        ) {
+            val frame = Frames.seal(roomId, frameKey, 4, counter, key, Payload.announcement(key.spelling, null))
+            assertEquals(null, reader.read(frame).reason)
+        }
+
+        fun state(
+            issued: Long,
+            vararg keys: SessionKey,
+        ) = reader.applyOwn(
+            RoomState(
+                issued,
+                emptyList(),
+                keys.associate {
+                    it.spelling to
+                        PeerEntry("p-${it.spelling}", Role.GUEST)
+                },
+            ),
+        )
+
+        val kept = SessionKey.mint()
+        val strangers = List(50) { SessionKey.mint() }
+        announce(kept)
+        strangers.forEach { announce(it) }
+        state(1, kept)
+        assertEquals(setOf(Bytes.hex(kept.id)), reader.marks.keys)
+        // A key committed once keeps its mark after a state that no longer commits it.
+        val late = SessionKey.mint()
+        announce(late)
+        announce(kept, 2)
+        state(2)
+        assertEquals(setOf(Bytes.hex(kept.id)), reader.marks.keys)
+        // An announcement after the last state is still held: no state has decided it yet.
+        announce(late, 2)
+        assertEquals(setOf(Bytes.hex(kept.id), Bytes.hex(late.id)), reader.marks.keys)
+    }
 }
