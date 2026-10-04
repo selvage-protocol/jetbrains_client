@@ -2,7 +2,6 @@ package dev.dontblameme.selvage.intellij.settings
 
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.openapi.ui.DialogPanel
-import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.dsl.builder.COLUMNS_LARGE
 import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
@@ -10,6 +9,7 @@ import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.dsl.builder.toNullableProperty
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 
 /** Settings → Tools → Selvage: the VS Code client's settings, with its defaults. */
 class SelvageConfigurable : BoundConfigurable("Selvage") {
@@ -45,7 +45,7 @@ class SelvageConfigurable : BoundConfigurable("Selvage") {
                 "The others open from Tools | Selvage | Open a document from the room.",
             )
             row("Cursor label:") {
-                comboBox(SelvageSettings.CURSOR_LABELS, SimpleListCellRenderer.create("") { cursorLabelText(it) })
+                comboBox(SelvageSettings.CURSOR_LABELS, textListCellRenderer(::cursorLabelText))
                     .bindItem(::cursorLabel.toNullableProperty())
             }.rowComment(
                 "Shows a participant's name at their caret. Off keeps the code clear, and the name " +
