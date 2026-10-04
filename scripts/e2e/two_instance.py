@@ -4,7 +4,8 @@ Each instance runs in its own sandbox (config, system, plugins, log and temporar
 on its own Xvfb display, with the test-only driver plugin (`plugin/src/e2e`) answering on a
 loopback socket. The scenario is the sibling clients' end-to-end one: host, join from the invite,
 open a file, edit both ways, see each other's caret, open a granted path the host never opened,
-rename, follow, leave, rejoin, the host's leave ending the room, and the host going away until
+rename, follow (landing on its first move, into a tab behind another and into a file the guest
+has not opened), leave, rejoin, the host's leave ending the room, and the host going away until
 the room ends. The TypeScript engine the other clients share takes part twice: as a third
 participant in the IDE's room, and as a host the IDE joins. A host coming back is not driven:
 neither engine reclaims a hosting session after a drop.
@@ -52,6 +53,9 @@ SEED_PATH = "notes.txt"
 SEED_TEXT = "a document two real editors are about to share\n"
 GRANTED_PATH = "granted/never-opened.txt"
 GRANTED_TEXT = "a file the host never opens in its own window\n"
+FOLLOWED_PATH = "followed.txt"
+FOLLOWED_TEXT = "".join(f"line {n} of a file only a follow opens in the guest\n" for n in range(1, 41))
+FOLLOWED_AT = FOLLOWED_TEXT.index("line 30 ")
 MARKER_HOST = "[[HOST-EDIT]]"
 MARKER_GUEST = "[[GUEST-EDIT]]"
 MARKER_TS = "[[TS-EDIT]]"
@@ -366,7 +370,9 @@ def session_field(ide, field, predicate, label):
     try:
         return wait_for(f"{ide.name}: {label}", check)
     except Failure as failure:
-        raise Failure(f"{failure}; last session: {json.dumps(ide.session(), ensure_ascii=False)[:1500]}")
+        session = ide.session()
+        last = json.dumps((session or {}).get(field), ensure_ascii=False)[:500]
+        raise Failure(f"{failure}; last {field}: {last}; last session: {json.dumps(session, ensure_ascii=False)[:1500]}")
 
 
 # --- the TypeScript engine -------------------------------------------------------------------------
@@ -460,8 +466,26 @@ def two_ides(host, guest, base):
     said_one(guest, 'Selvage: display name set to "Robert"')
     say(f"ok: the guest renamed itself; the host's list reads {host.session()['people']}")
 
+    shown = guest.session()
+    if shown["editor"] is None or shown["editor"]["path"] != GRANTED_PATH or SEED_PATH not in shown["documents"]:
+        raise Failure(f"the guest's {SEED_PATH} is not an open tab behind another; the follow's first landing proves nothing")
     guest.action("Selvage.FollowParticipant")
     session_field(guest, "follow", lambda f: f == "Following Ada", "the guest follows the host")
+    session_field(
+        guest,
+        "editor",
+        lambda e: e is not None and e["path"] == SEED_PATH and e["caret"] == 5,
+        f"the follow's first landing selects the open {SEED_PATH} with the caret at the host's",
+    )
+    say(f"ok: the follow's first landing brought the guest from {GRANTED_PATH} to the host's caret in {SEED_PATH}")
+    host.ask(op="caret", path=FOLLOWED_PATH, offset=FOLLOWED_AT)
+    session_field(
+        guest,
+        "editor",
+        lambda e: e is not None and e["path"] == FOLLOWED_PATH and e["caret"] == FOLLOWED_AT,
+        f"the host's first move into {FOLLOWED_PATH}, which the guest never opened, lands the guest's caret there",
+    )
+    say(f"ok: the host's first move into {FOLLOWED_PATH} brought the guest to offset {FOLLOWED_AT} there")
     session_field(guest, "widgets", lambda w: w["follow"] == "Following Ada", "the follow control stands")
     target = len(host.session()["documents"][SEED_PATH]) - 2
     host.ask(op="caret", path=SEED_PATH, offset=target)
@@ -603,6 +627,7 @@ def main():
         (project / "granted").mkdir(parents=True)
         (project / SEED_PATH).write_text(SEED_TEXT)
         (project / GRANTED_PATH).write_text(GRANTED_TEXT)
+        (project / FOLLOWED_PATH).write_text(FOLLOWED_TEXT)
         host = Ide("host", kit, project)
         guest = Ide("guest", kit)
         host.connect()
