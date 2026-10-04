@@ -76,7 +76,7 @@ class JdkTransport(
         return result.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS)
     }
 
-    private class Receiver(
+    internal class Receiver(
         val listener: SocketListener,
     ) : WebSocket.Listener {
         private val text = StringBuilder()
@@ -161,7 +161,7 @@ class JdkTransport(
         }
     }
 
-    private class Sender(
+    internal class Sender(
         private val socket: WebSocket,
         private val timeout: Duration,
         private val receiver: Receiver,
@@ -173,8 +173,8 @@ class JdkTransport(
                 tail =
                     tail
                         .handle { _, _ -> }
-                        .thenCompose { send() }
-                        .orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS)
+                        // The clock starts when the send does, not while it waits behind others.
+                        .thenCompose { send().orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS) }
                         .whenComplete { _, error ->
                             if (error != null) {
                                 socket.abort()
