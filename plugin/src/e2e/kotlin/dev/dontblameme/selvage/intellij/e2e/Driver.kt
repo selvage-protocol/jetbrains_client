@@ -116,6 +116,7 @@ class Driver : AppLifecycleListener {
                 SelvageSettings.get().update {
                     command.string("displayName")?.let { displayName = it }
                     command.string("serverUrl")?.let { serverUrl = it }
+                    command.string("cursorLabel")?.let { cursorLabel = it }
                 }
                 emptyMap()
             }
@@ -173,9 +174,26 @@ class Driver : AppLifecycleListener {
                 emptyMap()
             }
 
+            "select" -> {
+                val session = service.current ?: throw IllegalStateException("no session")
+                val path = command.string("path")!!
+                val editor = session.openRoomPath(path) ?: throw IllegalStateException("could not open $path")
+                val anchor = (command["anchor"] as JsonValue.Number).literal.toInt()
+                val head = (command["head"] as JsonValue.Number).literal.toInt()
+                editor.caretModel.moveToOffset(head)
+                editor.selectionModel.setSelection(anchor, head)
+                editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+                emptyMap()
+            }
+
             "save" -> {
                 FileDocumentManager.getInstance().saveAllDocuments()
                 emptyMap()
+            }
+
+            in Stage.ops -> {
+                val project = service.current?.project ?: openProject() ?: throw IllegalStateException("no project")
+                Stage.handle(op!!, command, project)
             }
 
             else -> {
@@ -200,6 +218,7 @@ class Driver : AppLifecycleListener {
                 "unexpected" to arr(answers.unexpected.toList()),
                 "connecting" to JsonValue.Bool(service.connecting),
             )
+        out.putAll(Stage.report())
         out["session"] = service.current?.let { session(it) } ?: JsonValue.Null
         return out
     }
