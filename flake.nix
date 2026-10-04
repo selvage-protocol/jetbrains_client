@@ -44,6 +44,8 @@
               t.ktlint
               t.shellcheck
               t.python
+              # The display each instance of the two-IDE end-to-end test draws on.
+              pkgs.xvfb
             ];
             JAVA_HOME = t.jdk.home;
             # The test IDE's runtime loads these when an editor lays out text, headless or not.
@@ -51,6 +53,22 @@
               pkgs.freetype
               pkgs.fontconfig
               pkgs.zlib
+            ];
+            # What a real IDE window needs besides those, for the two-IDE end-to-end test.
+            SELVAGE_E2E_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.libx11
+              pkgs.libxext
+              pkgs.libxrender
+              pkgs.libxtst
+              pkgs.libxi
+              pkgs.libxrandr
+              pkgs.libxcursor
+              pkgs.libxfixes
+              pkgs.libxxf86vm
+              pkgs.freetype
+              pkgs.fontconfig
+              pkgs.zlib
+              pkgs.libGL
             ];
             SELVAGE_NODE = "${t.node}/bin/node";
             # Temporary files stay in the checkout: the JVM ignores TMPDIR, so it is told as well.

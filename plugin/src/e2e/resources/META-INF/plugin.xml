@@ -1,0 +1,13 @@
+<idea-plugin>
+    <id>dev.dontblameme.selvage.e2e</id>
+    <name>Selvage end-to-end driver</name>
+    <version>0.1.0</version>
+    <vendor>Selvage Protocol</vendor>
+    <description>Drives the Selvage plugin for its two-IDE end-to-end test. Never installed by a person.</description>
+    <idea-version since-build="262"/>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>dev.dontblameme.selvage</depends>
+    <applicationListeners>
+        <listener class="dev.dontblameme.selvage.intellij.e2e.Driver" topic="com.intellij.ide.AppLifecycleListener"/>
+    </applicationListeners>
+</idea-plugin>

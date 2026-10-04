@@ -116,3 +116,38 @@ tasks.test {
     }
     configureSuite()
 }
+
+// The two-IDE end-to-end test's driver (`scripts/e2e/run-two-instance.sh`): a second plugin, loaded
+// only into the sandboxes that test starts and never into the plugin's own zip. It runs the
+// commands the test sends and answers with what the IDE shows.
+val e2e =
+    sourceSets.create("e2e") {
+        compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    }
+
+val e2eJar =
+    tasks.register<Jar>("e2eJar") {
+        archiveBaseName.set("selvage-e2e")
+        destinationDirectory.set(layout.buildDirectory.dir("e2e"))
+        // Its own classes and descriptor only: the platform adds the plugin's patched descriptor to
+        // every source set's resources, and a second `dev.dontblameme.selvage` is not loaded.
+        from(e2e.output.classesDirs)
+        from("src/e2e/resources")
+        duplicatesStrategy = DuplicatesStrategy.FAIL
+    }
+
+// What the end-to-end test needs: the IDE it runs, the plugin's zip and the driver's jar.
+tasks.register("prepareE2e") {
+    dependsOn(tasks.named("buildPlugin"), e2eJar)
+    val kit = layout.buildDirectory.file("e2e/kit.properties")
+    val zip = tasks.named<Zip>("buildPlugin").flatMap { it.archiveFile }
+    val driver = e2eJar.flatMap { it.archiveFile }
+    outputs.file(kit)
+    outputs.upToDateWhen { false }
+    doLast {
+        kit.get().asFile.writeText(
+            "ide=${intellijPlatform.platformPath}\nplugin=${zip.get().asFile}\ndriver=${driver.get().asFile}\n",
+        )
+    }
+}
+
