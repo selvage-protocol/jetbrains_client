@@ -35,6 +35,7 @@ import dev.dontblameme.selvage.intellij.bridge.Invites
 import dev.dontblameme.selvage.intellij.bridge.Mirror
 import dev.dontblameme.selvage.intellij.bridge.PeerColours
 import dev.dontblameme.selvage.intellij.bridge.People
+import dev.dontblameme.selvage.intellij.bridge.RoomPaths
 import dev.dontblameme.selvage.intellij.bridge.Say
 import dev.dontblameme.selvage.intellij.bridge.Words
 import dev.dontblameme.selvage.intellij.settings.SelvageSettings
@@ -335,7 +336,7 @@ class RoomSession(
     fun fileOf(path: String): Path? {
         if (!Grant.isGrantedPath(path)) return null
         mirror?.let { return it.fileOf(path) }
-        return folder?.root?.resolve(path)
+        return folder?.root?.let { RoomPaths.under(it, path) }
     }
 
     /** Who is in [file], for the project view's badge. */
@@ -669,7 +670,8 @@ class RoomSession(
             done(false)
             return
         }
-        val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(room.fileOf(path)!!)
+        val target = room.fileOf(path)
+        val file = target?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }
         val document = file?.let { FileDocumentManager.getInstance().getDocument(it) }
         if (document == null) {
             Notifier.error(project, Say.couldNotFetch(path, "the file could not be mirrored"))

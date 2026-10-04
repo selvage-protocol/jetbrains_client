@@ -20,6 +20,7 @@ class Mirror private constructor(
     val room: String,
     val window: String,
     val root: Path,
+    private val windows: Boolean,
 ) {
     data class Report(
         val mirrored: List<String>,
@@ -30,10 +31,14 @@ class Mirror private constructor(
     )
 
     /** Whether [path] is one this mirror would hold a document at. */
-    fun accepts(path: String): Boolean = Grant.isGrantedPath(path) && path != MARKER && !isWorkspaceConfigPath(path)
+    fun accepts(path: String): Boolean = isMirrorable(path) && !isWorkspaceConfigPath(path)
 
-    /** The file a room path lives at, or null for a path this mirror refuses. */
-    fun fileOf(path: String): Path? = if (accepts(path)) root.resolve(path.split('/').joinToString("/")) else null
+    /** A granted path that names a plain file under the root on this OS, and not the marker. */
+    private fun isMirrorable(path: String): Boolean =
+        Grant.isGrantedPath(path) && !path.equals(MARKER, ignoreCase = true) && RoomPaths.isLocalPath(path, windows)
+
+    /** The file a room path lives at, appended one checked segment at a time, or null for a path this mirror refuses. */
+    fun fileOf(path: String): Path? = if (accepts(path)) RoomPaths.under(root, path, windows) else null
 
     /** Writes one empty file per listed path, with the directories on the way, never through a link. */
     fun materialise(listing: List<String>): Report {
@@ -44,7 +49,7 @@ class Mirror private constructor(
         listing.forEachIndexed { index, path ->
             when {
                 index >= Grant.MAX_GRANT_PATHS -> overCapacity.add(path)
-                !Grant.isGrantedPath(path) || path == MARKER -> refused.add(path)
+                !isMirrorable(path) -> refused.add(path)
                 isWorkspaceConfigPath(path) -> withheld.add(path)
                 materialiseOne(path) -> mirrored.add(path)
                 else -> refused.add(path)
@@ -63,8 +68,9 @@ class Mirror private constructor(
         val removed = ArrayList<String>()
         for (relative in filesUnder()) {
             if (relative == MARKER || relative in keep || held(relative) || isWorkspaceConfigPath(relative)) continue
+            val file = RoomPaths.under(root, relative, windows) ?: continue
             try {
-                Files.deleteIfExists(root.resolve(relative))
+                Files.deleteIfExists(file)
                 removed.add(relative)
             } catch (e: IOException) {
                 continue
@@ -78,11 +84,11 @@ class Mirror private constructor(
         val segments = path.split('/')
         var dir = root
         for (segment in segments.dropLast(1)) {
-            dir = dir.resolve(segment)
+            dir = RoomPaths.child(dir, segment, windows) ?: return false
             val attributes = attributes(dir) ?: continue
             if (!attributes.isDirectory || attributes.isSymbolicLink) return false
         }
-        val leaf = attributes(dir.resolve(segments.last())) ?: return true
+        val leaf = attributes(RoomPaths.child(dir, segments.last(), windows) ?: return false) ?: return true
         return leaf.isRegularFile && !leaf.isSymbolicLink
     }
 
@@ -91,10 +97,11 @@ class Mirror private constructor(
         path: String,
         text: String,
     ): Boolean {
-        if (!accepts(path) || !plainPath(path) || !materialiseOne(path)) return false
+        val file = fileOf(path) ?: return false
+        if (!plainPath(path) || !materialiseOne(path)) return false
         return try {
             Files.write(
-                root.resolve(path),
+                file,
                 text.toByteArray(Charsets.UTF_8),
                 StandardOpenOption.WRITE,
                 StandardOpenOption.TRUNCATE_EXISTING,
@@ -114,7 +121,7 @@ class Mirror private constructor(
         val segments = path.split('/')
         var dir = root
         for (segment in segments.dropLast(1)) {
-            dir = dir.resolve(segment)
+            dir = RoomPaths.child(dir, segment, windows) ?: return false
             val attributes = attributes(dir)
             if (attributes == null) {
                 try {
@@ -126,7 +133,7 @@ class Mirror private constructor(
                 return false
             }
         }
-        val file = dir.resolve(segments.last())
+        val file = RoomPaths.child(dir, segments.last(), windows) ?: return false
         val existing = attributes(file)
         if (existing != null) return existing.isRegularFile && !existing.isSymbolicLink
         return try {
@@ -197,6 +204,7 @@ class Mirror private constructor(
             storage: Path,
             room: String,
             window: String = UUID.randomUUID().toString(),
+            windows: Boolean = RoomPaths.isWindows(),
         ): Mirror {
             val segment = sanitiseRoom(room)
             require(segment.isNotEmpty()) { "cannot mirror a room with no name in it" }
@@ -215,7 +223,7 @@ class Mirror private constructor(
                     room,
                 )},\"window\":${jsonString(window)},\"pid\":${ProcessHandle.current().pid()}}\n"
             Files.writeString(root.resolve(MARKER), marker)
-            return Mirror(room, window, root)
+            return Mirror(room, window, root, windows)
         }
 
         private fun jsonString(text: String): String =

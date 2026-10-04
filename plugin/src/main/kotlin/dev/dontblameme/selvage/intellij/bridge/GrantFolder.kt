@@ -70,7 +70,7 @@ class GrantFolder(
             readIgnore(dir.resolve(".gitignore"))?.let {
                 ignores.add(Grant.IgnoreSource(segments.subList(0, index).joinToString("/"), it))
             }
-            val next = dir.resolve(segment)
+            val next = RoomPaths.child(dir, segment) ?: return Read.Refused(Refusal.NOT_GRANTED)
             val attributes =
                 try {
                     Files.readAttributes(next, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)

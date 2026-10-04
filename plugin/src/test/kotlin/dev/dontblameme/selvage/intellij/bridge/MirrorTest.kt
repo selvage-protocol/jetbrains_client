@@ -76,4 +76,82 @@ class MirrorTest : TestCase() {
         mirror.remove()
         assertFalse(Files.exists(mirror.root))
     }
+
+    /** The shapes Windows reads as somewhere else: a drive, a share, a root, a device, a stream, a stripped name. */
+    private val windowsShapes =
+        listOf(
+            "C:/Users/me/.gitconfig",
+            "C:",
+            "D:/x.txt",
+            "c:x.txt",
+            "src/C:/x.txt",
+            "src/C:",
+            "\\\\server\\share\\x.txt",
+            "//server/share/x.txt",
+            "/abs.txt",
+            "\\abs.txt",
+            "a\\b.txt",
+            "CON",
+            "con.txt",
+            "src/NUL",
+            "src/aux.c",
+            "LPT1.log",
+            "COM9",
+            "COM\u00b9.txt",
+            "CONIN$",
+            "conout\$.txt",
+            "trailing.",
+            "src/trailing ",
+            "a<b.txt",
+            "a>b.txt",
+            "a\"b.txt",
+            "a|b.txt",
+            "a?b.txt",
+            "a*b.txt",
+            "file.txt::\$DATA",
+            "..",
+            "a/../b.txt",
+            "./a.txt",
+        )
+
+    fun testEveryWindowsShapeIsRefusedSegmentBySegment() {
+        for (shape in windowsShapes) {
+            assertFalse("a Windows guest takes $shape as a local path", RoomPaths.isLocalPath(shape, windows = true))
+        }
+        for (fine in listOf("src/main.kt", "console.txt", "COM10.txt", "a.b.c", "LPT.txt", "con-fig/x.txt")) {
+            assertTrue("a Windows guest refuses $fine", RoomPaths.isLocalPath(fine, windows = true))
+        }
+    }
+
+    fun testAWindowsMirrorNeitherResolvesNorWritesThoseShapes() {
+        val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w", windows = true)
+        for (shape in windowsShapes) {
+            assertFalse("the mirror accepts $shape", mirror.accepts(shape))
+            assertNull("the mirror resolves $shape", mirror.fileOf(shape))
+            assertFalse("the mirror calls $shape plain", mirror.plainPath(shape))
+        }
+        val report = mirror.materialise(windowsShapes + "src/main.kt")
+        assertEquals(listOf("src/main.kt"), report.mirrored)
+        assertEquals(windowsShapes, report.refused)
+        val written = Files.walk(scratch).use { walk -> walk.filter { Files.isRegularFile(it) }.toList() }
+        assertEquals(
+            setOf(mirror.root.resolve(Mirror.MARKER), mirror.root.resolve("src/main.kt")),
+            written.toSet(),
+        )
+    }
+
+    fun testOnThisHostAPathIsOnlyEverAppendedToTheRoot() {
+        val root = Files.createDirectories(scratch.resolve("root"))
+        assertEquals(root.resolve("a").resolve("b.txt"), RoomPaths.under(root, "a/b.txt", windows = false))
+        for (shape in listOf("/etc/passwd", "../x", "a/../../x", "a/./b", ".", "a//b", "", "a/")) {
+            assertNull("$shape resolved", RoomPaths.under(root, shape, windows = false))
+        }
+        assertNull(RoomPaths.child(root, "..", windows = false))
+        assertNull(RoomPaths.child(root, "/etc", windows = false))
+        val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w", windows = false)
+        assertNull(mirror.fileOf("/etc/passwd"))
+        assertNull(mirror.fileOf("../w2/x.txt"))
+        assertNull("the marker in another case is still the marker", mirror.fileOf(".SELVAGE-MIRROR.JSON"))
+        assertEquals(mirror.root.resolve("C:").resolve("x.txt"), mirror.fileOf("C:/x.txt"))
+    }
 }
