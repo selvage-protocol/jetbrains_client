@@ -94,27 +94,6 @@ class Mirror private constructor(
         return leaf.isRegularFile && !leaf.isSymbolicLink
     }
 
-    /** Writes the room's text into the mirror file, refusing a path that leaves the mirror through a link. */
-    fun write(
-        path: String,
-        text: String,
-    ): Boolean {
-        val file = fileOf(path) ?: return false
-        if (!plainPath(path) || !materialiseOne(path)) return false
-        return try {
-            Files.write(
-                file,
-                text.toByteArray(Charsets.UTF_8),
-                StandardOpenOption.WRITE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                LinkOption.NOFOLLOW_LINKS,
-            )
-            true
-        } catch (e: IOException) {
-            false
-        }
-    }
-
     /**
      * Deletes the mirror. Links are not followed: a link in the copy (a package linked in by hand) is
      * removed as a link, and what it points at is left alone. What cannot be deleted is left in place

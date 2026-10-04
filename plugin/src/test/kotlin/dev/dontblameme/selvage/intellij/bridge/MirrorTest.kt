@@ -49,7 +49,6 @@ class MirrorTest : TestCase() {
         val report = mirror.materialise(listOf("linked/x.txt"))
         assertEquals(listOf("linked/x.txt"), report.refused)
         assertFalse(Files.exists(outside.resolve("x.txt")))
-        assertFalse(mirror.write("linked/x.txt", "text"))
     }
 
     fun testAMintThroughALinkIsRefused() {
