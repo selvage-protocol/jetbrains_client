@@ -21,4 +21,5 @@ remembered value, then one question.
 
 A guest's copy of the room lives under the IDE's system directory,
 `selvage/rooms/<room>/<window>`, with a `.selvage-mirror.json` marker. It is removed when the
-session ends, and kept when the room ends under you.
+session ends, and kept when the room ends under you. When you join the same room again, the copies
+of it whose IDE is no longer running are removed, as VS Code removes them.

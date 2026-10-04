@@ -41,6 +41,9 @@ The notice is VS Code's: `joined the room, opening <path>.`, with `<n> more file
 **Open a document from the room** button when there are more. The room's project settings
 (`.idea/**`, `.run/**`, `*.run.xml`, `*.iml`, `*.ipr`, `*.iws`) are not written into the copy, and that is said once.
 
+When the host stops sharing a file you have open, its editor closes, or, if you have unsaved edits
+in it, it stays open and on disk but is no longer shared. Either way it is said, in VS Code's words.
+
 When the session ends, the copy and its window go. When the room ends under you, the copy is kept
 and the sentence says where.
 
