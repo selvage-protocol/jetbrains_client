@@ -42,7 +42,7 @@ class SelvageConfigurable : BoundConfigurable("Selvage") {
             row {
                 checkBox("Open the room's first document on join").bindSelected(::openOnJoin)
             }.rowComment(
-                "The others open from Tools | Selvage | Open a document from the room.",
+                "Open the rest from Tools | Selvage | Open a document from the room.",
             )
             row("Cursor label:") {
                 comboBox(SelvageSettings.CURSOR_LABELS, textListCellRenderer(::cursorLabelText))
