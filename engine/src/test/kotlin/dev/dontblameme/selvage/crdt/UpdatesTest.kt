@@ -235,7 +235,7 @@ class UpdatesTest {
                 writeVarUint(0)
             }.toByteArray()
 
-    // Preemptive: the merge this guards once looped for ever on a truncated skip length.
+    // The merge this guards must not loop for ever on a truncated skip length.
     @Test
     @Timeout(value = 20, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     fun a_clock_past_what_an_int_length_spans_is_refused_before_anything_integrates() {

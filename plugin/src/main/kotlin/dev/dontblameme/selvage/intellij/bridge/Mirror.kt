@@ -106,7 +106,7 @@ class Mirror private constructor(
     /**
      * Deletes the mirror. Links are not followed: a link in the copy (a package linked in by hand) is
      * removed as a link, and what it points at is left alone. What cannot be deleted is left in place
-     * and the rest still goes, as `File.deleteRecursively` did.
+     * and the rest still goes.
      */
     fun remove() = deleteTree(root)
 
