@@ -283,6 +283,57 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         assertTrue("the copy is kept", Files.isRegularFile(mirror.root.resolve("README.md")))
     }
 
+    fun testAHostFollowingAGuestReadsNoFileAndSaysARefusalOnce() {
+        val root = Files.createDirectories(Path.of(project.basePath!!))
+        val readme = Files.writeString(root.resolve("README.md"), "hello, world\n")
+        LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root)!!.refresh(false, true)
+        val service = SelvageService.get()
+        service.host(project)
+        val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
+        val bob = SelvageSession.join(session.invite()!!, options("Bob")).also { engines.add(it) }
+        val carol = SelvageSession.join(session.invite()!!, options("Carol")).also { engines.add(it) }
+        eventually("both guests are in") { session.participants().size == 2 }
+        bob.open("README.md")
+        carol.open("README.md")
+        eventually("both have the text") {
+            bob.text("README.md") == "hello, world\n" && carol.text("README.md") == "hello, world\n"
+        }
+        val editor = openInEditor(readme)
+        eventually("the open document is bound") { session.sync.isBound("README.md") }
+        bob.setCursor("README.md", Selection(1, 1))
+        session.follow(bob.seat!!)
+        eventually("the follow lands") { editor.caretModel.offset == 1 }
+
+        // The file can no longer be read: a follow that read it to decide would refuse to land.
+        Files.setPosixFilePermissions(readme, emptySet())
+        try {
+            bob.setCursor("README.md", Selection(5, 5))
+            eventually("the follow moves with the guest") { editor.caretModel.offset == 5 }
+        } finally {
+            Files.setPosixFilePermissions(
+                readme,
+                java.nio.file.attribute.PosixFilePermissions
+                    .fromString("rw-r--r--"),
+            )
+        }
+        assertFalse(said.sentences().toString(), said.sentences().any { it.startsWith("Selvage: could not open") })
+
+        val refusal = Say.couldNotOpen("missing.txt", "the path is not one this window shares")
+        bob.setCursor("missing.txt")
+        eventually("the refusal is said") { said.sentences().contains(refusal) }
+        for (offset in 1..3) {
+            carol.setCursor("README.md", Selection(offset, offset))
+            eventually("the other guest's caret reaches the host") {
+                session.engine.cursors().any {
+                    it.clientId == carol.awarenessClientId() && it.selection == Selection(offset, offset)
+                }
+            }
+        }
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        assertEquals("said once while the follow stays there", 1, said.sentences().count { it == refusal })
+        assertEquals(Say.following("Bob"), session.followLabel())
+    }
+
     private fun hostEngine(
         name: String,
         listing: AtomicReference<List<String>>,

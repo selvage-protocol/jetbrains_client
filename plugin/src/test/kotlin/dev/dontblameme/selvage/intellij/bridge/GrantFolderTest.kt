@@ -69,6 +69,22 @@ class GrantFolderTest : TestCase() {
         assertEquals(GrantFolder.Read.Text("hello\n"), GrantFolder(linkedInfo, false).read("README.md"))
     }
 
+    fun testAFileOpenedForTheHostIsAPlainFileReachedThroughPlainDirectories() {
+        assertEquals(root.resolve("src").resolve("main.kt"), folder().plainFile("src/main.kt"))
+        for (path in listOf(
+            "linked-file.txt",
+            "linked-dir/secret.txt",
+            "src/up/outside/secret.txt",
+            "../outside/secret.txt",
+            "/etc/passwd",
+            "src",
+            "missing.txt",
+            ".env",
+        )) {
+            assertNull(path, folder().plainFile(path))
+        }
+    }
+
     fun testAGrantedFileIsServedWithLfLineEndings() {
         assertEquals(GrantFolder.Read.Text("hello\nworld\n"), folder().read("README.md"))
         assertEquals(GrantFolder.Read.Text("fun main() {}\n"), folder().read("src/main.kt"))

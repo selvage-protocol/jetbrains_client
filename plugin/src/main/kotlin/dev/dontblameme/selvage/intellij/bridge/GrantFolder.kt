@@ -106,6 +106,29 @@ class GrantFolder(
     }
 
     /**
+     * The file [path] names in the folder, when each step to it is a plain directory and it is a plain
+     * file, judged from the steps' attributes alone and reading nothing. For opening a listed path in
+     * the host's own editor; the editor opens it by path afterwards, so a swap in between is the same
+     * residual [read] states.
+     */
+    fun plainFile(path: String): Path? {
+        if (!Grant.isGrantedPath(path, fold)) return null
+        val segments = path.split('/')
+        var at = root
+        for ((index, segment) in segments.withIndex()) {
+            at = RoomPaths.child(at, segment) ?: return null
+            val attributes =
+                try {
+                    Files.readAttributes(at, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                } catch (e: IOException) {
+                    return null
+                }
+            if (if (index < segments.size - 1) !attributes.isDirectory else !attributes.isRegularFile) return null
+        }
+        return at
+    }
+
+    /**
      * `.git/info/exclude`, read only through a plain `.git` and a plain `info`, as the walk reads it:
      * a linked `.git` brings no rules from outside the folder.
      */

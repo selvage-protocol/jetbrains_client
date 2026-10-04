@@ -188,9 +188,14 @@ class DocumentSync(
         scheduleSync(entry)
     }
 
-    /** Brings every bound document to the replica now, merging what was typed meanwhile. */
+    /**
+     * Brings every bound document with something to settle to the replica now, merging what was typed
+     * meanwhile: a keystroke held back, a room edit not yet applied, or one the editor refused.
+     */
     fun syncAll() {
-        bound.values.toList().forEach { sync(it) }
+        bound.values
+            .filter { it.pending.isNotEmpty() || it.remote.isNotEmpty() || it.refused != null }
+            .forEach { sync(it) }
     }
 
     fun sync(path: String) {

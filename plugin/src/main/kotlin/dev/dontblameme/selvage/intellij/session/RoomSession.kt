@@ -71,6 +71,7 @@ class RoomSession(
     private var peers: List<WirePeer> = engine.peers()
     private var documents: List<String> = engine.openSet()
     private var granted: List<String> = engine.listing()
+    private var grantedSet: Set<String> = granted.toHashSet()
     private var listedBefore: Set<String> = emptySet()
     private var hostName = ""
     private var reconnecting = false
@@ -88,6 +89,9 @@ class RoomSession(
     private var followingPeerId: String? = null
     private var followingName = ""
     private var followedPath: String? = null
+
+    /** The path a follow could not open, said once rather than on every event while it stays there. */
+    private var followRefused: String? = null
     private var pendingGoTo: String? = null
     private var landing = 0
     private var expectedEcho: Pair<Editor, Int>? = null
@@ -390,8 +394,9 @@ class RoomSession(
             }
 
             is SessionEvent.Listing -> {
-                listedBefore = granted.toHashSet()
+                listedBefore = grantedSet
                 granted = event.paths
+                grantedSet = granted.toHashSet()
                 if (!isHost) applyListing(event.paths, listedBefore)
             }
 
@@ -435,7 +440,14 @@ class RoomSession(
         }
         for (path in fetches.keys.toList()) if (engine.has(path)) fetches.remove(path)?.invoke()
         sayViewerOnce()
-        followTick()
+        if (event is SessionEvent.Presence ||
+            event is SessionEvent.OpenSet ||
+            event is SessionEvent.RemoteEdits ||
+            event is SessionEvent.Peers ||
+            event is SessionEvent.Listing
+        ) {
+            followTick()
+        }
         retryGoTo()
         redrawPresence()
         fireChanged()
@@ -683,23 +695,36 @@ class RoomSession(
         if (settings.openOnJoin) openRoomPath(path)
     }
 
-    /** Opens a room path in an editor: the guest's mirror file, or the host's own file under its folder. */
-    fun openRoomPath(path: String): Editor? {
+    /**
+     * Opens a room path in an editor: the guest's mirror file, or the host's own file under its folder.
+     * A path this window already shares opens its document's own file, so a follow that lands on it
+     * again and again reads nothing from disk; a host's other paths must be in its listing and a plain
+     * file there. [say] is false when a refusal has been said already.
+     */
+    fun openRoomPath(
+        path: String,
+        say: Boolean = true,
+    ): Editor? {
         val manager = FileEditorManager.getInstance(project)
-        val target =
-            if (isHost) {
-                if (folder!!.read(path) is GrantFolder.Read.Refused) null else fileOf(path)
-            } else {
-                mirror?.let { if (it.plainPath(path)) it.fileOf(path) else null }
+        val shared = sync.documentOf(path)?.let { FileDocumentManager.getInstance().getFile(it) }
+        val file =
+            shared ?: run {
+                val target =
+                    if (isHost) {
+                        if (path in grantedSet) folder!!.plainFile(path) else null
+                    } else {
+                        mirror?.let { if (it.plainPath(path)) it.fileOf(path) else null }
+                    }
+                if (target == null) {
+                    if (say) Notifier.error(project, Say.couldNotOpen(path, "the path is not one this window shares"))
+                    return null
+                }
+                if (!isHost) mirror?.materialise(listOf(path))
+                val local = LocalFileSystem.getInstance()
+                local.findFileByNioFile(target) ?: local.refreshAndFindFileByNioFile(target)
             }
-        if (target == null) {
-            Notifier.error(project, Say.couldNotOpen(path, "the path is not one this window shares"))
-            return null
-        }
-        if (!isHost) mirror?.materialise(listOf(path))
-        val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(target)
         if (file == null) {
-            Notifier.error(project, Say.couldNotOpen(path, "the file is not on disk"))
+            if (say) Notifier.error(project, Say.couldNotOpen(path, "the file is not on disk"))
             return null
         }
         val selected = manager.selectedTextEditor
@@ -925,6 +950,7 @@ class RoomSession(
         }
         followingPeerId = peerId
         followedPath = null
+        followRefused = null
         followingName = label(peerId)
         pendingGoTo = null
         fireChanged()
@@ -975,7 +1001,12 @@ class RoomSession(
         val path = cursor.path
         if (path != null && follow && path == followedPath && path in dropped) return Landing.FILE_GONE
         if (path == null || path in dropped) return Landing.WAITING
-        val editor = openRoomPath(path) ?: return Landing.REFUSED
+        val editor = openRoomPath(path, say = !follow || path != followRefused)
+        if (editor == null) {
+            if (follow) followRefused = path
+            return Landing.REFUSED
+        }
+        if (follow) followRefused = null
         val selection = cursor.selection
         if (selection == null) {
             if (!engine.has(path)) return Landing.WAITING
@@ -984,6 +1015,11 @@ class RoomSession(
         }
         sync.sync(path)
         val head = selection.head.coerceIn(0, editor.document.textLength)
+        val caret = editor.caretModel
+        if (follow && caret.caretCount == 1 && caret.offset == head && !editor.selectionModel.hasSelection()) {
+            followedPath = path
+            return Landing.LANDED
+        }
         landing += 1
         try {
             editor.caretModel.removeSecondaryCarets()
@@ -1032,6 +1068,7 @@ class RoomSession(
     private fun clearFollow() {
         followingPeerId = null
         followedPath = null
+        followRefused = null
         expectedEcho = null
         fireChanged()
     }
