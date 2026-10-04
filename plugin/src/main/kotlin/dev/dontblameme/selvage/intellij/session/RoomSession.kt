@@ -192,10 +192,16 @@ class RoomSession(
         connection.subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
+                // The platform says a file opened from the editor's own coroutine, which is not a
+                // write-safe context and can run inside another task's modal progress. The bind
+                // brings the document to the room's text, so it waits for a write-safe turn.
                 override fun fileOpened(
                     source: FileEditorManager,
                     file: VirtualFile,
-                ) = opened(file)
+                ) = ApplicationManager.getApplication().invokeLater(
+                    { if (source.isFileOpen(file)) opened(file) },
+                    ModalityState.nonModal(),
+                )
 
                 override fun fileClosed(
                     source: FileEditorManager,
@@ -536,7 +542,7 @@ class RoomSession(
     }
 
     private fun opened(file: VirtualFile) {
-        if (finished) return
+        if (finished || !file.isValid) return
         val path = pathOf(file) ?: return
         val document = FileDocumentManager.getInstance().getDocument(file) ?: return
         bindDocument(path, document)
@@ -743,7 +749,11 @@ class RoomSession(
         }
         val selected = manager.selectedTextEditor
         if (selected != null && FileDocumentManager.getInstance().getFile(selected.document) == file) return selected
-        return manager.openTextEditor(OpenFileDescriptor(project, file), true)
+        val editor = manager.openTextEditor(OpenFileDescriptor(project, file), true) ?: return null
+        // The platform says the file opened only later, so the document is bound here, before a
+        // landing reads it: unbound, a mirror file is still empty and every caret falls to its top.
+        opened(file)
+        return editor
     }
 
     // --- fetching -----------------------------------------------------------------------------
@@ -1029,11 +1039,7 @@ class RoomSession(
         }
         sync.sync(path)
         val head = selection.head.coerceIn(0, editor.document.textLength)
-        val caret = editor.caretModel
-        if (follow && caret.caretCount == 1 && caret.offset == head && !editor.selectionModel.hasSelection()) {
-            followedPath = path
-            return Landing.LANDED
-        }
+        // Placed and revealed on every landing, as VS Code does, even where the caret already is.
         landing += 1
         try {
             editor.caretModel.removeSecondaryCarets()

@@ -4,7 +4,8 @@ Each instance runs in its own sandbox (config, system, plugins, log and temporar
 on its own Xvfb display, with the test-only driver plugin (`plugin/src/e2e`) answering on a
 loopback socket. The scenario is the sibling clients' end-to-end one: host, join from the invite,
 open a file, edit both ways, see each other's caret, open a granted path the host never opened,
-rename, follow, leave, rejoin, the host's leave ending the room, and the host going away until
+rename, follow (landing on its first move, into a tab behind another and into a file the guest
+has not opened), leave, rejoin, the host's leave ending the room, and the host going away until
 the room ends. The TypeScript engine the other clients share takes part twice: as a third
 participant in the IDE's room, and as a host the IDE joins. A host coming back is not driven:
 neither engine reclaims a hosting session after a drop.
@@ -18,6 +19,10 @@ Environment: SELVAGE_SELVAGED (required), SELVAGE_VSCODE_CLIENT (default: the ne
 checkout, whose packages `npm ci` has installed),
 SELVAGE_E2E_LIBRARY_PATH (the dev shell sets it), SELVAGE_E2E_DEADLINE_S (one wait, default 90),
 SELVAGE_E2E_WATCHDOG_S (the run, default 900).
+
+A run whose scenario passes still fails when either IDE logged an error the plugin caused: an
+`ERROR` (`SEVERE` in `idea.log`) from the plugin's packages, one the platform blames on it, or a
+document changed outside a write-safe context.
 """
 
 import json
@@ -48,6 +53,9 @@ SEED_PATH = "notes.txt"
 SEED_TEXT = "a document two real editors are about to share\n"
 GRANTED_PATH = "granted/never-opened.txt"
 GRANTED_TEXT = "a file the host never opens in its own window\n"
+FOLLOWED_PATH = "followed.txt"
+FOLLOWED_TEXT = "".join(f"line {n} of a file only a follow opens in the guest\n" for n in range(1, 41))
+FOLLOWED_AT = FOLLOWED_TEXT.index("line 30 ")
 MARKER_HOST = "[[HOST-EDIT]]"
 MARKER_GUEST = "[[GUEST-EDIT]]"
 MARKER_TS = "[[TS-EDIT]]"
@@ -309,6 +317,44 @@ class Ide:
         return out
 
 
+LOG_ENTRY = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ \[ *\d+\] +(\w+) - (\S+) - ")
+PLUGIN_MARKS = ("dev.dontblameme.selvage", "Plugin to blame: Selvage ", "Write-unsafe context")
+
+
+def plugin_errors(log):
+    """The `ERROR` entries of an `idea.log` the plugin caused, each as its header and first lines."""
+    found = []
+    entry = None
+    for line in log.read_text(errors="replace").splitlines():
+        match = LOG_ENTRY.match(line)
+        if match:
+            entry = [line] if match.group(1) in ("SEVERE", "ERROR") else None
+            if entry is not None:
+                found.append(entry)
+        elif entry is not None:
+            entry.append(line)
+    return [
+        entry
+        for entry in found
+        if LOG_ENTRY.match(entry[0]).group(2).startswith("#d.d.s.") or any(m in "\n".join(entry) for m in PLUGIN_MARKS)
+    ]
+
+
+def check_logs(ides):
+    """Fails when an IDE's log holds an error the plugin caused, quoting the first one."""
+    blamed = []
+    for ide in ides:
+        log = ide.home / "log" / "idea.log"
+        if not log.is_file():
+            raise Failure(f"{ide.name} wrote no log at {log}")
+        blamed += [(ide.name, log, entry) for entry in plugin_errors(log)]
+    if blamed:
+        name, log, entry = blamed[0]
+        quoted = "\n    ".join([entry[0]] + [line for line in entry[1:] if "dev.dontblameme.selvage" in line][:8])
+        raise Failure(f"{len(blamed)} error(s) the plugin caused were logged; the first, in {log}:\n    {quoted}")
+    say(f"ok: no error the plugin caused in {', '.join(ide.name for ide in ides)}'s log")
+
+
 def said_one(ide, prefix):
     return wait_for(
         f"{ide.name} says something starting {prefix!r}",
@@ -324,7 +370,9 @@ def session_field(ide, field, predicate, label):
     try:
         return wait_for(f"{ide.name}: {label}", check)
     except Failure as failure:
-        raise Failure(f"{failure}; last session: {json.dumps(ide.session(), ensure_ascii=False)[:1500]}")
+        session = ide.session()
+        last = json.dumps((session or {}).get(field), ensure_ascii=False)[:500]
+        raise Failure(f"{failure}; last {field}: {last}; last session: {json.dumps(session, ensure_ascii=False)[:1500]}")
 
 
 # --- the TypeScript engine -------------------------------------------------------------------------
@@ -418,8 +466,26 @@ def two_ides(host, guest, base):
     said_one(guest, 'Selvage: display name set to "Robert"')
     say(f"ok: the guest renamed itself; the host's list reads {host.session()['people']}")
 
+    shown = guest.session()
+    if shown["editor"] is None or shown["editor"]["path"] != GRANTED_PATH or SEED_PATH not in shown["documents"]:
+        raise Failure(f"the guest's {SEED_PATH} is not an open tab behind another; the follow's first landing proves nothing")
     guest.action("Selvage.FollowParticipant")
     session_field(guest, "follow", lambda f: f == "Following Ada", "the guest follows the host")
+    session_field(
+        guest,
+        "editor",
+        lambda e: e is not None and e["path"] == SEED_PATH and e["caret"] == 5,
+        f"the follow's first landing selects the open {SEED_PATH} with the caret at the host's",
+    )
+    say(f"ok: the follow's first landing brought the guest from {GRANTED_PATH} to the host's caret in {SEED_PATH}")
+    host.ask(op="caret", path=FOLLOWED_PATH, offset=FOLLOWED_AT)
+    session_field(
+        guest,
+        "editor",
+        lambda e: e is not None and e["path"] == FOLLOWED_PATH and e["caret"] == FOLLOWED_AT,
+        f"the host's first move into {FOLLOWED_PATH}, which the guest never opened, lands the guest's caret there",
+    )
+    say(f"ok: the host's first move into {FOLLOWED_PATH} brought the guest to offset {FOLLOWED_AT} there")
     session_field(guest, "widgets", lambda w: w["follow"] == "Following Ada", "the follow control stands")
     target = len(host.session()["documents"][SEED_PATH]) - 2
     host.ask(op="caret", path=SEED_PATH, offset=target)
@@ -561,6 +627,7 @@ def main():
         (project / "granted").mkdir(parents=True)
         (project / SEED_PATH).write_text(SEED_TEXT)
         (project / GRANTED_PATH).write_text(GRANTED_TEXT)
+        (project / FOLLOWED_PATH).write_text(FOLLOWED_TEXT)
         host = Ide("host", kit, project)
         guest = Ide("guest", kit)
         host.connect()
@@ -570,6 +637,7 @@ def main():
         ide_host_with_ts_guest(host, guest, base)
         ts_host_with_ide_guest(guest, base)
         guest.screenshot("end")
+        check_logs((host, guest))
         say(f"PASS: two IDEs and the TypeScript engine, {time.monotonic() - started:.0f}s")
         return 0
     except Failure as failure:

@@ -303,7 +303,12 @@ def scene_guest_following(host, guest, out):
     e2e.session_field(guest, "widgets", lambda w: w["follow"] == "Following Ada", "the follow control stands")
     target = PROJECT[TASK].index("fun isOverdue") + len("fun ")
     host.ask(op="caret", path=TASK, offset=target)
-    e2e.session_field(guest, "editor", lambda e: e is not None and e["path"] == TASK, "the follow brings Grace to Task.kt")
+    e2e.session_field(
+        guest,
+        "editor",
+        lambda e: e is not None and e["path"] == TASK and e["caret"] == target,
+        "the follow brings Grace to Ada's caret in Task.kt",
+    )
     # Ada reads on; the follow keeps Grace where Ada's caret is.
     target = PROJECT[TASK].index("due < today") + len("due < today")
     host.ask(op="caret", path=TASK, offset=target)
