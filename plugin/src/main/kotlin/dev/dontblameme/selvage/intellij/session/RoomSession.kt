@@ -749,7 +749,11 @@ class RoomSession(
         }
         val selected = manager.selectedTextEditor
         if (selected != null && FileDocumentManager.getInstance().getFile(selected.document) == file) return selected
-        return manager.openTextEditor(OpenFileDescriptor(project, file), true)
+        val editor = manager.openTextEditor(OpenFileDescriptor(project, file), true) ?: return null
+        // The platform says the file opened only later, so the document is bound here, before a
+        // landing reads it: unbound, a mirror file is still empty and every caret falls to its top.
+        opened(file)
+        return editor
     }
 
     // --- fetching -----------------------------------------------------------------------------
@@ -1035,11 +1039,7 @@ class RoomSession(
         }
         sync.sync(path)
         val head = selection.head.coerceIn(0, editor.document.textLength)
-        val caret = editor.caretModel
-        if (follow && caret.caretCount == 1 && caret.offset == head && !editor.selectionModel.hasSelection()) {
-            followedPath = path
-            return Landing.LANDED
-        }
+        // Placed and revealed on every landing, as VS Code does, even where the caret already is.
         landing += 1
         try {
             editor.caretModel.removeSecondaryCarets()
