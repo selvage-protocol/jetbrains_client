@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.intellij.bridge
 
+import com.intellij.openapi.application.ApplicationManager
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
@@ -60,11 +61,15 @@ class Mirror private constructor(
         return Report(mirrored, refused, withheld, overCapacity)
     }
 
-    /** A republished listing: materialise, then remove what it no longer names unless [held] keeps it. */
+    /**
+     * A republished listing: materialise, then remove what it no longer names unless [held] keeps it.
+     * Up to a whole listing of files and a walk of the mirror, so never on the event thread.
+     */
     fun republish(
         listing: List<String>,
         held: (String) -> Boolean,
     ): Report {
+        ApplicationManager.getApplication()?.assertIsNonDispatchThread()
         val applied = materialise(listing)
         val keep = listing.toHashSet()
         val removed = ArrayList<String>()

@@ -25,6 +25,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.util.Alarm
+import com.intellij.util.concurrency.AppExecutorUtil
 import dev.dontblameme.selvage.engine.SelvageSession
 import dev.dontblameme.selvage.engine.SessionEnding
 import dev.dontblameme.selvage.engine.SessionEvent
@@ -77,6 +78,8 @@ class RoomSession(
     private var awayDeadline: Long? = null
     private var copiedUntil = 0L
     private var leaving = false
+
+    @Volatile
     var finished = false
         private set
     private var autoOpen = !isHost
@@ -108,6 +111,9 @@ class RoomSession(
     private val grantAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
     private val fetchAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
     private val fetchedOnly = HashSet<String>()
+
+    /** A guest's mirror is written here, one listing after another, and never on the event thread. */
+    private val mirrorWork = AppExecutorUtil.createBoundedApplicationPoolExecutor("Selvage mirror", 1)
     private var keepMirror = false
 
     /** The open people lists, each drawn again (the key) when membership moves, or closed (the value). */
@@ -587,7 +593,8 @@ class RoomSession(
 
     /**
      * A guest's listing: the documents of paths that left it are ended first, then the mirror is brought
-     * to it, keeping on disk what a document of this window still holds.
+     * to it on a pooled thread, keeping on disk what a document of this window held when it was asked,
+     * and what that could not do is said back on the event thread.
      */
     private fun applyListing(
         paths: List<String>,
@@ -597,7 +604,19 @@ class RoomSession(
         val listed = paths.toHashSet()
         dropped.removeAll(listed)
         if (before != null) dropDocuments(before.filter { it !in listed })
-        val report = room.republish(paths) { held(it) }
+        val holding = (sync.paths() + kept.keys.filter(::held)).toHashSet()
+        mirrorWork.execute {
+            if (finished) return@execute
+            val report = room.republish(paths) { it in holding }
+            LocalFileSystem.getInstance().refreshNioFiles(listOf(room.root), true, true, null)
+            ApplicationManager.getApplication().invokeLater(
+                { if (!finished) sayMirrored(report) },
+                ModalityState.nonModal(),
+            )
+        }
+    }
+
+    private fun sayMirrored(report: Mirror.Report) {
         if (report.withheld.isNotEmpty() && !saidWithheld) {
             saidWithheld = true
             Notifier.info(project, Say.projectSettingsWithheld(report.withheld.joinToString(", ")))
@@ -624,7 +643,6 @@ class RoomSession(
                 },
             )
         }
-        LocalFileSystem.getInstance().refreshNioFiles(listOf(room.root), true, true, null)
     }
 
     /** Whether a document of this window still holds [path]: a shared one, or a kept copy still open. */
@@ -1064,7 +1082,7 @@ class RoomSession(
         if (mirror != null && !keepMirror) {
             val files = FileEditorManager.getInstance(project).openFiles
             for (file in files) if (pathOf(file) != null) FileEditorManager.getInstance(project).closeFile(file)
-            mirror.remove()
+            removeMirror(mirror)
             // A window opened on the mirror would be left on a folder that is gone; a kept copy keeps its window.
             if (project.basePath?.let { Path.of(it) } == mirror.root) {
                 ApplicationManager.getApplication().invokeLater(
@@ -1083,6 +1101,17 @@ class RoomSession(
         }
         onFinished.forEach { it(this) }
         changed.forEach { it() }
+    }
+
+    /** After the listing being written, if any, so nothing is written into the mirror as it goes. */
+    private fun removeMirror(mirror: Mirror) {
+        try {
+            mirrorWork.submit { mirror.remove() }.get(MIRROR_REMOVE_WAIT_S, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            mirror.remove()
+        } catch (e: java.util.concurrent.ExecutionException) {
+            mirror.remove()
+        }
     }
 
     private class EngineReplica(
@@ -1109,6 +1138,7 @@ class RoomSession(
         const val SELECTION_INTERVAL_MS = 100
         const val GRANT_REFRESH_MS = 250
         const val FETCH_TIMEOUT_MS = 5000
+        const val MIRROR_REMOVE_WAIT_S = 10L
 
         const val RECONNECTING_TOOLTIP = "The connection dropped; trying to rejoin the room."
 
