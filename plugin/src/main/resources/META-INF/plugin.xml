@@ -1,26 +1,27 @@
-<idea-plugin>
+<idea-plugin url="https://github.com/selvage-protocol/jetbrains_client">
     <id>dev.dontblameme.selvage</id>
     <name>Selvage</name>
     <vendor url="https://selvage.dontblameme.dev">Selvage Protocol</vendor>
     <description><![CDATA[
-    <p>Selvage lets people edit the same project at the same time, each from their own editor. You host
-    a session from the project you have open and send the invite link it gives you. The other person
-    joins from that link, and from then on you both type into the same files, see each other's carets
-    and selections, and can go to or follow another participant.</p>
+    <p>Edit the same project together, live, each from your own IDE. Host a session from the project
+    you have open and send the invite link it gives you; the other person joins from that link.</p>
 
-    <p>File contents and edits travel through the Selvage server you choose, which relays them between
-    the participants. They are sealed end to end under a key that is carried in the invite link's
-    fragment and never sent to the server, so the server cannot read the files, the edits, the carets
-    or the list of shared files. When you host, the plugin asks which server to use and offers the
-    public demo server; you can run your own <code>selvaged</code> and use that instead. A guest uses
-    the server named in the invite link.</p>
+    <ul>
+      <li>Type into the same files at the same time, with each other's carets and selections in the editor.</li>
+      <li>See who is in the session and which file they are in, and go to or follow any of them.</li>
+      <li>Encrypted end to end. The key travels in the invite link and never reaches the server, so the
+      server cannot read the files, the edits, the carets or the list of shared files.</li>
+      <li>Host on the public demo server, or run your own <code>selvaged</code>.</li>
+      <li>Works with the Selvage clients for VS Code, Neovim and the browser.</li>
+    </ul>
 
-    <p>A guest gets a local copy of the files the host shares, opened as a new project window in safe
-    mode, so code insight works on ordinary files. The copy is removed when the session ends. A host
-    shares the project's folder minus dependency and build directories, secret files such as
-    <code>.env</code> and private keys, and whatever the folder's ignore files leave out.</p>
+    <p>A guest gets a copy of the shared files in a new project window, opened in safe mode because the
+    code comes from someone else, and the copy is removed when the session ends. A host never shares
+    dependency or build folders, secrets such as <code>.env</code> and private keys, or anything the
+    folder's ignore files leave out.</p>
 
-    <p>Sessions work across the Selvage clients for VS Code, Neovim and the browser.</p>
+    <p><a href="https://github.com/selvage-protocol/jetbrains_client">Source code and documentation</a>
+    · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
     <p>0.1.0, the first release.</p>
