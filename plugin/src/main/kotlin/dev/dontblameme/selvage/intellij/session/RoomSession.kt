@@ -3,6 +3,7 @@ package dev.dontblameme.selvage.intellij.session
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -392,6 +393,11 @@ class RoomSession(
             }
 
             is SessionEvent.Presence -> {}
+
+            // A record, not an alarm (PROTOCOL §13.2): the VS Code client shows a person nothing either.
+            is SessionEvent.FrameRefused -> {
+                log.info("refused frame ${event.frame} (${event.reason}) from ${event.sender ?: "an unknown sender"}")
+            }
 
             is SessionEvent.HostAway -> {
                 armHostAway(event.graceMs)
@@ -1091,3 +1097,5 @@ class RoomSession(
         const val MAX_UNLISTED_WARNINGS = 500
     }
 }
+
+private val log = Logger.getInstance(RoomSession::class.java)
