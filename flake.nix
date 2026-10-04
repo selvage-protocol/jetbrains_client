@@ -29,7 +29,7 @@
     in
     {
       # JDK 21 for Gradle and the engine, Node for the differential test against yjs, Python for
-      # the specification's peer runner, ktlint for the lint, and no git hooks.
+      # the specification's peer runner, ktlint and actionlint for the lint, and no git hooks.
       devShells = forAllSystems (
         pkgs:
         let
@@ -47,6 +47,8 @@
               # The display each instance of the two-IDE end-to-end test draws on.
               pkgs.xvfb
               pkgs.lychee
+              # The workflows' lint, which runs the `run:` blocks through the shellcheck above.
+              pkgs.actionlint
             ];
             JAVA_HOME = t.jdk.home;
             # The test IDE's runtime loads these when an editor lays out text, headless or not.

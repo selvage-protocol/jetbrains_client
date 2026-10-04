@@ -2,8 +2,9 @@
 #
 # The local gate, run inside `nix develop`:
 #
-#   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over the scripts, and
-#                                # a syntax check of the end-to-end test's orchestrator
+#   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over the scripts, a
+#                                # syntax check of the end-to-end test's orchestrator, and
+#                                # actionlint over the workflows (local only: the runner has no nix)
 #   scripts/ci-local.sh checks   # the release workflow's dry_run gating, the version bump's
 #                                # test, the engine's suite (with the differential test against real
 #                                # yjs), the live tests against a real selvaged, the
@@ -46,6 +47,8 @@ job_lint() {
   shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh \
     scripts/bump-version.sh scripts/test-bump-version.sh
   python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
+  say "lint: actionlint over the workflows"
+  actionlint
 }
 
 job_links() {

@@ -8,7 +8,7 @@ SELVAGE_SELVAGED=/path/to/selvaged scripts/ci-local.sh all
 
 | Job | What it runs |
 |---|---|
-| `lint` | ktlint over the Kotlin sources, shellcheck over the scripts. |
+| `lint` | ktlint over the Kotlin sources, shellcheck over the scripts, actionlint over the workflows. CI runs all but actionlint, since the runner has no nix. |
 | `checks` | The engine's suite, with the differential test against real `yjs`; the engine against a real `selvaged`, alone and beside the TypeScript engine; the specification's peer runner, its corpus and its mutation census; the plugin's suite in a test IDE; the plugin in a test IDE against a real `selvaged`; the Plugin Verifier; the flake's sandboxed checks. |
 | `links` | lychee over `README.md` and `docs/`, with `lychee.toml`. |
 | `e2e` | Two real IDEs and the TypeScript engine against a real `selvaged`, below. |
