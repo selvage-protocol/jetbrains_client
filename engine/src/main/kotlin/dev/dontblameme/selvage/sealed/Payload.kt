@@ -82,7 +82,7 @@ sealed interface Payload {
 
         /** A path a receiver will carry: `PROTOCOL.md` §5's rule, applied by dropping the path. */
         fun usablePath(path: String): Boolean =
-            path.isNotEmpty() && path.none { Character.getType(it) == Character.CONTROL.toInt() } &&
+            path.isNotBlank() && path.none { Character.getType(it) == Character.CONTROL.toInt() } &&
                 path.toByteArray(Charsets.UTF_8).size <= MAX_PATH_BYTES
 
         fun closing(issued: Long): ByteArray =

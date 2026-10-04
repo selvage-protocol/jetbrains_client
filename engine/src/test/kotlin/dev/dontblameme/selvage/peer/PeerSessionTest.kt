@@ -11,6 +11,7 @@ import dev.dontblameme.selvage.sealed.DropReason
 import dev.dontblameme.selvage.sealed.Envelope
 import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Frames
+import dev.dontblameme.selvage.sealed.Payload
 import dev.dontblameme.selvage.sealed.Role
 import dev.dontblameme.selvage.sealed.SessionKey
 import kotlin.test.Test
@@ -383,6 +384,18 @@ class PeerSessionTest {
         guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), if (before == 7L) 8L else 7L)
         assertEquals(listOf(room.host.awarenessClientId), guest.cursors().map { it.clientId })
         assertTrue(guest.awarenessClientId != before)
+    }
+
+    @Test
+    fun `a blank path is neither listed by the host nor kept by a guest`() {
+        val blanks = listOf("   ", "\t", "\u00a0", "\u2003 ")
+        val room = Room { listOf("a.txt") + blanks }
+        val guest = room.join("p-guest")
+        room.settle()
+        assertEquals(listOf("a.txt"), room.host.listing)
+        assertEquals(listOf("a.txt"), guest.listing)
+        blanks.forEach { assertFalse(Payload.usablePath(it), "\"$it\"") }
+        assertTrue(Payload.usablePath(" a.txt "))
     }
 
     @Test
