@@ -135,6 +135,20 @@ class SelvageSessionTest {
     }
 
     @Test
+    fun `the people are said again once the roles that name them land`() {
+        val host = host()
+        val guest = SelvageSession.join(host.invite!!, options("Bob", Recorded())).also { sessions.add(it) }
+        val atJoin = guest.rolesBySeat()
+        val atPeers = CopyOnWriteArrayList<Map<String, Role>>()
+        guest.addListener { if (it is SessionEvent.Peers) atPeers.add(guest.rolesBySeat()) }
+        relay.settle()
+        advance(300)
+        val roles = guest.rolesBySeat()
+        assertEquals(Role.HOST, roles[host.seat], "the guest knows who hosts")
+        assertEquals(roles, atPeers.lastOrNull() ?: atJoin, "the last people the guest heard named the roles it holds")
+    }
+
+    @Test
     fun `a path that is not listed is not served`() {
         val host = host()
         val guest = join(host)

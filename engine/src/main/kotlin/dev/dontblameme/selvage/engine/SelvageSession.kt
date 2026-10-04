@@ -70,6 +70,7 @@ sealed interface SessionEvent {
         val attempt: Int,
     ) : SessionEvent
 
+    /** The people in the room, said again when one of their roles changes. */
     data class Peers(
         val peers: List<WirePeer>,
     ) : SessionEvent
@@ -211,6 +212,7 @@ class SelvageSession private constructor(
     private var lastListing: List<String> = emptyList()
     private var lastOpen: List<String> = emptyList()
     private var lastPeers: List<WirePeer> = emptyList()
+    private var lastRoles: Map<String, Role> = emptyMap()
     private var hostAway = false
     private val readOnce = HashSet<String>()
 
@@ -769,8 +771,12 @@ class SelvageSession private constructor(
             lastOpen = open
             events.add(SessionEvent.OpenSet(open))
         }
-        if (peerList != lastPeers) {
+        // The roles are read beside the people, so a role that arrives after the people it names
+        // (the host's, once its signed state lands) says the people again.
+        val roles = session.rolesBySeat()
+        if (peerList != lastPeers || roles != lastRoles) {
             lastPeers = peerList
+            lastRoles = roles
             events.add(SessionEvent.Peers(peerList))
         }
         val grace = session.hostAwayGraceMs(clock())
