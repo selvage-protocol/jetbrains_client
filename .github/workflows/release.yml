@@ -1,0 +1,465 @@
+name: release
+
+# A release builds the plugin's zip, attaches it to a GitHub Release, and publishes that zip to the
+# JetBrains Marketplace as `dev.dontblameme.selvage` with the Gradle `publishPlugin` task. The
+# Marketplace half authenticates with the repository secret `JETBRAINS_MARKETPLACE_TOKEN`, handed to
+# Gradle as the environment variable of the same name, which `plugin/build.gradle.kts` reads into
+# `intellijPlatform.publishing.token`; it is never written into a file. The Marketplace takes a
+# plugin's first upload only by hand, on its website, so this publishes updates and nothing else.
+#
+# The owner triggers a release from this workflow, and only by dispatching it at `main`: the
+# required `bump` input names `patch`, `minor` or `major`. A dispatch computes its own version: it
+# refuses unless the version `plugin/build.gradle.kts` already carries is released as `v<version>`
+# on the remote, derives the next one with `scripts/bump-version.sh`, runs the gate `ci.yml` runs on
+# the bumped tree, commits and pushes it to `main`, and releases that commit. Requiring the build's
+# version to be released is what makes a second click safe: a bump that has been pushed without its
+# tag refuses loudly instead of computing the version after it and releasing a number nobody chose.
+# Nothing here moves a tag, and a pull request runs `ci.yml` instead and can never release.
+#
+# The change notes in `plugin/src/main/resources/META-INF/plugin.xml` are what the Marketplace shows
+# for a version, and they are prose nothing can derive, so they are written by hand before the
+# button is pressed: their first paragraph opens with the version they describe, and a dispatch
+# refuses a version whose notes are not there yet. That doubles as a check on the `bump` word, since
+# the notes name the version the person meant to cut.
+#
+# `bump` is required and carries no default, and this file carries no version string at all:
+# `scripts/bump-version.sh` moves every copy of the version, and a version written here would be a
+# copy no bump moves.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which component to bump: scripts/bump-version.sh moves the version plugin/build.gradle.kts carries, and the release is cut at the result"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Refuse if the build's version is not released or the change notes do not describe the version this bump cuts, print that version and the plan, and stop: nothing is bumped, gated, committed, tagged, released or published"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    # The gate alone is the 90 minutes `ci.yml` allows; the bump, the build and the publish are a
+    # few minutes more.
+    timeout-minutes: 120
+    # `contents: write` is the push of the bump to `main`, the tag and the GitHub Release. The
+    # checkouts keep no credential, so the token reaches git only in the two steps that push.
+    permissions:
+      contents: write
+    env:
+      # The same pinned tools `ci.yml` installs, so the gate below runs with the binaries the pull
+      # request does.
+      KTLINT_VERSION: "1.8.0"
+      KTLINT_SHA256: "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
+      LYCHEE_VERSION: "0.24.2"
+      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A bump is a commit on `main` and nothing else. The push below is not forced, so a dispatch
+      # from a ref that is behind `main` is refused by the remote; this refuses the other direction,
+      # a ref that is ahead of it, where the push would land a tree nobody merged.
+      - name: refuse unless this run is bumping main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            cat >&2 <<EOF
+          refusing: this dispatch is at ${GITHUB_REF}, and a bump is a commit on main. A dispatch
+          at another ref would build the bump on a tree nobody merged; dispatch this workflow at
+          main, the default branch.
+          EOF
+            exit 1
+          fi
+
+      # The version the build carries has to be released before the next one is computed from it.
+      # A run that pushed its bump and died before the tag leaves exactly that state, and a second
+      # click there must refuse: computing from an unreleased version releases the version after a
+      # number nobody has released. The tag reads are anonymous.
+      - name: refuse unless the build's version is released
+        run: |
+          current=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin/build.gradle.kts)
+          remote=$(git ls-remote --tags origin "refs/tags/v${current}")
+          if [ -z "$remote" ]; then
+            cat >&2 <<EOF
+          refusing: plugin/build.gradle.kts carries ${current}, and there is no tag v${current} on
+          the remote. That version was bumped but never released, and computing the next version
+          from it would release the version after a number nobody has released. Tag the commit
+          that carries it and was published (git tag -a v${current} <commit> -m v${current}, then
+          git push origin v${current}), or put the build back to the version last released, then
+          dispatch again.
+          EOF
+            exit 1
+          fi
+          echo "plugin/build.gradle.kts ${current} is released as tag v${current}"
+
+      # `scripts/bump-version.sh --dry-run` names the files it would write and prints the version
+      # it would write as the last line of stdout, the one line this run takes its tag, its Release
+      # and its commit subject from. The change notes are read here rather than after the plan, so
+      # a dry run refuses where the release would.
+      - name: derive the version this bump cuts
+        id: target
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          report=$(scripts/bump-version.sh "$BUMP" --dry-run)
+          printf '%s\n' "$report"
+          version=$(printf '%s\n' "$report" | tail -n1)
+          remote=$(git ls-remote --tags origin "refs/tags/v${version}")
+          if [ -n "$remote" ]; then
+            cat >&2 <<EOF
+          refusing: tag v${version} already exists on the remote, so this bump would cut a version
+          that is already released. The build is behind its own tags: bump from the version the
+          last release carries, then dispatch again.
+          EOF
+            exit 1
+          fi
+          opening=$(sed -n '/<change-notes>/,/<\/change-notes>/p' plugin/src/main/resources/META-INF/plugin.xml |
+            grep -m1 -o '<p>[^<]*' || true)
+          case "${opening#<p>}" in
+            "$version" | "$version"[!0-9.]*)
+              echo "the change notes open with: ${opening#<p>}"
+              ;;
+            *)
+              cat >&2 <<EOF
+          refusing: the change notes in plugin/src/main/resources/META-INF/plugin.xml open with
+          "${opening#<p>}", and this bump cuts ${version}. The Marketplace shows those notes for
+          the version, so they are written first: open them with a paragraph that starts with
+          ${version}, merge that, then dispatch again. If the notes already describe another
+          version, check the bump word.
+          EOF
+              exit 1
+              ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: stop before changing anything on a dry run
+        if: inputs.dry_run == true
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          cat <<EOF
+          dry_run: nothing was bumped, gated, committed, pushed, tagged, released or published.
+          This dispatch would have:
+            - run scripts/bump-version.sh ${BUMP}, setting every version in the tree to ${VERSION}
+            - run the gate ci.yml runs: the lint, the engine's and the plugin's suites, the live
+              tests against a selvaged built from reference_server's main, the peer corpus, the
+              Plugin Verifier, the link check and the two-IDE end-to-end test
+            - committed that as DontBlameMe <dontblameme@noreply.codeberg.org> with the subject
+              "chore(bump): release ${VERSION}", and pushed it to main
+            - built plugin/build/distributions/selvage-${VERSION}.zip
+            - tagged v${VERSION}, created its GitHub Release with that zip, and published it to
+              the JetBrains Marketplace with publishPlugin
+          EOF
+
+      - name: bump the version
+        if: inputs.dry_run != true
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          scripts/bump-version.sh "$BUMP"
+          git diff --name-only > "$RUNNER_TEMP/bumped-files.txt"
+
+      # The build's version is the release version: refuse to gate, tag or publish anything else.
+      - name: assert the build carries the version this run cuts
+        if: inputs.dry_run != true
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          built=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin/build.gradle.kts)
+          if [ "$built" != "$VERSION" ]; then
+            printf 'refusing: plugin/build.gradle.kts carries %s, and this run cuts %s\n' "$built" "$VERSION" >&2
+            exit 1
+          fi
+
+      # From here to the commit is the gate `.github/workflows/ci.yml` runs, step for step, on the
+      # bumped tree before the commit exists: a commit pushed with this workflow's own
+      # `GITHUB_TOKEN` starts no run, so this is the only check the commit reaching `main` will ever
+      # have. A step added to `ci.yml` belongs here too, because this job's runner is one only a
+      # dispatch exercises.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.dry_run != true
+        with:
+          repository: selvage-protocol/specification
+          path: .ci/specification
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.dry_run != true
+        with:
+          repository: selvage-protocol/reference_server
+          path: .ci/reference_server
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.dry_run != true
+        with:
+          repository: selvage-protocol/vscode_client
+          path: .ci/vscode_client
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: inputs.dry_run != true
+        with:
+          python-version: "3.14.7"
+
+      - name: install the peer runner's packages
+        if: inputs.dry_run != true
+        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: inputs.dry_run != true
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        if: inputs.dry_run != true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: inputs.dry_run != true
+        with:
+          node-version: "22.18.0"
+
+      - name: install the differential test's yjs
+        if: inputs.dry_run != true
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: engine/src/test/node
+
+      - name: install the VS Code client's packages
+        if: inputs.dry_run != true
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: .ci/vscode_client
+
+      - name: install ktlint
+        if: inputs.dry_run != true
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/ktlint" "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint"
+          echo "${KTLINT_SHA256}  $RUNNER_TEMP/ktlint" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/ktlint" /usr/local/bin/ktlint
+
+      - name: lint
+        if: inputs.dry_run != true
+        run: |
+          ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
+          shellcheck scripts/*.sh scripts/e2e/*.sh
+          python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
+
+      - name: the engine's suite
+        if: inputs.dry_run != true
+        run: ./gradlew --max-workers=4 --console=plain :engine:test
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: build selvaged
+        if: inputs.dry_run != true
+        run: cargo build --locked --release -p selvaged
+        working-directory: .ci/reference_server
+        env:
+          CARGO_BUILD_JOBS: "4"
+
+      - name: the engine against a real selvaged, alone and beside the TypeScript engine
+        if: inputs.dry_run != true
+        run: ./gradlew --max-workers=4 --console=plain :engine:liveTest
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+
+      - name: the specification's peer runner, by its own tests
+        if: inputs.dry_run != true
+        run: scripts/run-peer-vectors.sh --self-test
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: the specification's peer corpus
+        if: inputs.dry_run != true
+        run: scripts/run-peer-vectors.sh
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: the peer corpus's mutation census
+        if: inputs.dry_run != true
+        run: scripts/run-peer-vectors.sh --mutation-census
+        env:
+          SELVAGE_SPECIFICATION: ${{ github.workspace }}/.ci/specification
+
+      - name: the plugin's suite in a test IDE
+        if: inputs.dry_run != true
+        run: ./gradlew --max-workers=4 --console=plain :plugin:test
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+
+      - name: the plugin in a test IDE against a real selvaged
+        if: inputs.dry_run != true
+        run: ./gradlew --max-workers=4 --console=plain :plugin:test -Pselvage.live
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+
+      - name: the Plugin Verifier against the targeted IDE
+        if: inputs.dry_run != true
+        run: ./gradlew --max-workers=4 --console=plain :plugin:verifyPlugin
+
+      - name: install lychee
+        if: inputs.dry_run != true
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/lychee.tar.gz" \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${LYCHEE_SHA256}  $RUNNER_TEMP/lychee.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/lychee.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
+          sudo install -m 0755 "$RUNNER_TEMP/lychee" /usr/local/bin/lychee
+          lychee --version
+
+      - name: links over the README and docs
+        if: inputs.dry_run != true
+        run: lychee --config lychee.toml --no-progress README.md docs
+
+      - name: install Xvfb
+        if: inputs.dry_run != true
+        run: sudo apt-get install -y --no-install-recommends xvfb
+
+      - name: two IDEs and the TypeScript engine against a real selvaged
+        if: inputs.dry_run != true
+        run: scripts/e2e/run-two-instance.sh
+        env:
+          SELVAGE_VSCODE_CLIENT: ${{ github.workspace }}/.ci/vscode_client
+          SELVAGE_SELVAGED: ${{ github.workspace }}/.ci/reference_server/target/release/selvaged
+
+      # `git commit -a` takes every tracked file that differs, so a tracked file the gate rewrote
+      # would ride along in the bump. Refuse anything but the files the bump wrote.
+      - name: refuse unless the tree is the one the bump wrote
+        if: inputs.dry_run != true
+        run: |
+          git diff --name-only > "$RUNNER_TEMP/gated-files.txt"
+          if ! cmp -s "$RUNNER_TEMP/bumped-files.txt" "$RUNNER_TEMP/gated-files.txt"; then
+            printf 'refusing: the bump wrote\n%s\nand the tree after the gate differs in\n%s\n' \
+              "$(cat "$RUNNER_TEMP/bumped-files.txt")" "$(cat "$RUNNER_TEMP/gated-files.txt")" >&2
+            exit 1
+          fi
+
+      # The one push this workflow makes to `main`. A bump pull request would carry no checks at
+      # all, since an event created with this workflow's own `GITHUB_TOKEN` starts no run, so the
+      # gate above runs here instead. Not forced: if `main` moved under the run, the push is refused
+      # and the run is red, because the gate did not validate the commit against the new tip.
+      - name: commit and push the bump
+        if: inputs.dry_run != true
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          git config user.name "DontBlameMe"
+          git config user.email "dontblameme@noreply.codeberg.org"
+          git commit -a -m "chore(bump): release ${VERSION}"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Built from the commit just pushed, before the tag exists, so a build that fails leaves no
+      # tag behind. The zip's name carries the build's version, which is asserted above.
+      - name: build the plugin's zip
+        if: inputs.dry_run != true
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          ./gradlew --max-workers=4 --console=plain :plugin:buildPlugin
+          zip="plugin/build/distributions/selvage-${VERSION}.zip"
+          if [ ! -f "$zip" ]; then
+            printf 'refusing: the build wrote no %s\n' "$zip" >&2
+            ls -l plugin/build/distributions >&2 || true
+            exit 1
+          fi
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      # Tags are resolved against `origin`, not local refs. An existing tag must name the commit
+      # this run releases; anything else is someone else's release and stops the job, and nothing
+      # here moves a tag. An annotated tag's own ref resolves to the tag object rather than the
+      # commit, so the peeled `^{}` form is queried too and preferred when present.
+      - name: create and push the tag
+        if: inputs.dry_run != true
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          remote_refs=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")
+          if [ -z "$remote_refs" ]; then
+            git tag -a "v${VERSION}" -m "v${VERSION}" "$RELEASE_COMMIT"
+            if ! git push origin "v${VERSION}"; then
+              echo "push of v${VERSION} was rejected; another run may have created it first"
+              remote_refs=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")
+            fi
+          fi
+          if [ -n "$remote_refs" ]; then
+            remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
+            echo "tag v${VERSION} exists at ${remote_sha}"
+            if [ "$remote_sha" != "$RELEASE_COMMIT" ]; then
+              printf 'refusing: tag v%s points at %s, not the commit this run releases (%s)\n' \
+                "$VERSION" "$remote_sha" "$RELEASE_COMMIT" >&2
+              exit 1
+            fi
+          fi
+
+      # The notes are the change notes the Marketplace shows, which are HTML GitHub renders as it
+      # stands once the indentation that would make it a code block is gone.
+      - name: create the GitHub Release
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          {
+            printf '# Selvage for JetBrains IDEs v%s\n\n' "$VERSION"
+            sed -n '/<change-notes><!\[CDATA\[/,/\]\]><\/change-notes>/p' plugin/src/main/resources/META-INF/plugin.xml |
+              sed '1d;$d' | sed 's/^[[:space:]]*//'
+            printf '\nInstall it from the JetBrains Marketplace (Settings | Plugins | Marketplace, "Selvage"),\n'
+            printf "or install the attached \`%s\` with Settings | Plugins | Install Plugin from Disk.\n" "${ZIP##*/}"
+          } > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "release v${VERSION} already exists; refreshing the zip."
+            gh release upload "v${VERSION}" "$ZIP" --clobber
+          else
+            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file "$RUNNER_TEMP/release-notes.md" "$ZIP"
+          fi
+
+      # The token reaches Gradle as an environment variable and never as an argument or a file. The
+      # emptiness check names the missing secret rather than leaving Gradle to report an unset
+      # property. The tag and the Release exist whatever this step does, and a re-dispatch cuts the
+      # next version rather than this one, so a refusal here is finished by hand.
+      - name: publish to the JetBrains Marketplace
+        if: inputs.dry_run != true
+        env:
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          if [ -z "${JETBRAINS_MARKETPLACE_TOKEN}" ]; then
+            printf 'refusing: no JETBRAINS_MARKETPLACE_TOKEN secret is set for this repository\n' >&2
+            exit 1
+          fi
+          if ! ./gradlew --max-workers=4 --console=plain :plugin:publishPlugin; then
+            cat >&2 <<EOF
+          Marketplace publish failed. The tag v${VERSION} and its GitHub Release already exist. If
+          the plugin has never been uploaded, its first upload is made by hand on the Marketplace
+          website and this task publishes updates only. To finish this version, upload the
+          Release's selvage-${VERSION}.zip on the plugin's Marketplace page, or run
+          ./gradlew :plugin:publishPlugin from a checkout at v${VERSION} with the token in
+          JETBRAINS_MARKETPLACE_TOKEN.
+          EOF
+            exit 1
+          fi
