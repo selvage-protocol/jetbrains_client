@@ -17,7 +17,7 @@ interface Scheduler {
         task: Runnable,
     ): Cancellable
 
-    /** Called once the session that owns this scheduler is left. */
+    /** Called once the session that owns this scheduler ends or is left. */
     fun shutdown() {}
 }
 
@@ -28,6 +28,7 @@ class ThreadScheduler(
     private val executor =
         ScheduledThreadPoolExecutor(1) { runnable -> Thread(runnable, name).apply { isDaemon = true } }.apply {
             removeOnCancelPolicy = true
+            setExecuteExistingDelayedTasksAfterShutdownPolicy(false)
         }
 
     override fun nowMs(): Long = System.nanoTime() / 1_000_000
@@ -40,7 +41,8 @@ class ThreadScheduler(
         return Cancellable { future.cancel(false) }
     }
 
+    /** Runs nothing more; a task running now, which may be the one shutting it down, finishes. */
     override fun shutdown() {
-        executor.shutdownNow()
+        executor.shutdown()
     }
 }

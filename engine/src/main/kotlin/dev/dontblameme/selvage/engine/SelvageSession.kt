@@ -128,7 +128,7 @@ fun interface SessionListener {
 class SessionOptions(
     val displayName: String,
     val transport: Transport = JdkTransport(),
-    /** Null gives the session its own thread, stopped when it is left. */
+    /** Null gives the session its own thread, stopped when it ends or is left. */
     val scheduler: Scheduler? = null,
     val handshakeTimeout: Duration = Duration.ofSeconds(10),
     val metaTimeout: Duration = Duration.ofSeconds(2),
@@ -778,6 +778,11 @@ class SelvageSession private constructor(
             open.close(1000, why.wire)
         }
         socket = null
+        val ended = SessionException("ended", "the session ended: ${why.wire}")
+        requests.values.forEach { it.completeExceptionally(ended) }
+        requests.clear()
+        // Nothing is timed once the session is over; the replica stays readable.
+        if (ownsScheduler) scheduler.shutdown()
         events.add(SessionEvent.Ended(why))
     }
 

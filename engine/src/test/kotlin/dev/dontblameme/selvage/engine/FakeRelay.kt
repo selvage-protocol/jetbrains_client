@@ -87,6 +87,7 @@ class FakeRelay : Transport {
                 }
 
                 "session.rename" -> {
+                    if (holdRenames) return
                     name = params!!.string("display_name")!!
                     send(JsonValue.Obj.of("id" to message["id"], "result" to JsonValue.Obj(emptyMap())))
                     for (other in room!!.conns.values) {
@@ -193,6 +194,10 @@ class FakeRelay : Transport {
     }
 
     val connections = ArrayList<Conn>()
+
+    /** A `session.rename` is left unanswered. */
+    @Volatile
+    var holdRenames = false
 
     /** Sent to each connection ahead of its `room.created` or `room.joined`, as no server does. */
     @Volatile

@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 class SelvageSessionTest {
     private val relay = FakeRelay()
@@ -292,6 +293,44 @@ class SelvageSessionTest {
         relay.settle()
         assertEquals(SessionEnding.CLOSING, guest.ending)
         assertEquals(SessionEnding.CLOSING, host.ending)
+    }
+
+    @Test
+    fun `an ended session fails what it still owed and stops its own thread`() {
+        fun sessionThreads() = Thread.getAllStackTraces().keys.count { it.name == "selvage-session" && it.isAlive }
+        val before = sessionThreads()
+        val host = host()
+        val guest =
+            SelvageSession
+                .join(
+                    host.invite!!,
+                    SessionOptions("Bob", transport = relay, meta = {
+                        _,
+                        _,
+                        ->
+                        Meta(null, emptyList(), emptyList(), null, null)
+                    }),
+                ).also { sessions.add(it) }
+        relay.settle()
+        assertEquals(before + 1, sessionThreads())
+        relay.holdRenames = true
+        val renamed = guest.rename("Robert")
+        relay.settle()
+        assertTrue(!renamed.isDone)
+        assertTrue(host.closeRoom())
+        relay.settle()
+        assertEquals(SessionEnding.CLOSING, guest.ending)
+        assertTrue(renamed.isCompletedExceptionally, "$renamed")
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (sessionThreads() != before) {
+            if (System.nanoTime() >
+                deadline
+            ) {
+                fail("${sessionThreads()} session threads 5 s after the end, $before before")
+            }
+            java.util.concurrent.locks.LockSupport
+                .parkNanos(1_000_000)
+        }
     }
 
     @Test
