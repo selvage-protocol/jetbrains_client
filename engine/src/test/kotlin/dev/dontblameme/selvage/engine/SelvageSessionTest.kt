@@ -176,6 +176,24 @@ class SelvageSessionTest {
     }
 
     @Test
+    fun `a reconnect whose handshake is refused retries once, and leaves no second seat`() {
+        val host = host()
+        val seen = Recorded()
+        val guest = join(host, seen)
+        relay.connection(guest.seat!!).drop()
+        relay.settle()
+        relay.refuseHello = "hello_required"
+        advance(500)
+        assertEquals(listOf(1, 2), seen.all<SessionEvent.Reconnecting>().map { it.attempt })
+        advance(10_000)
+        advance(300)
+        assertEquals(listOf(1, 2), seen.all<SessionEvent.Reconnecting>().map { it.attempt })
+        assertEquals(2, seen.all<SessionEvent.Seated>().size)
+        assertEquals(listOf(guest.seat), host.peers().map { it.peerId })
+        assertEquals(Role.GUEST, guest.ownRole())
+    }
+
+    @Test
     fun `a refused link and a refused room are said, not retried`() {
         val host = host()
         val noKeys = host.invite!!.substringBefore('#')

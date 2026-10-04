@@ -436,6 +436,9 @@ class SelvageSession private constructor(
             locked {
                 if (attempt == generation) {
                     handshaking = false
+                    // Superseded first, so its close is not also taken for a drop: the caller
+                    // decides what a failed handshake leads to, and one retry is armed, not two.
+                    generation += 1
                     socket?.close(1000, "handshake failed")
                     socket = null
                 }

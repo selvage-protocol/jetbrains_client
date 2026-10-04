@@ -103,6 +103,11 @@ class FakeRelay : Transport {
         }
 
         private fun hello(params: JsonValue.Obj) {
+            refuseHello?.let { code ->
+                refuseHello = null
+                event("session.error", JsonValue.Obj.of("code" to code.json(), "message" to "refused".json()))
+                return
+            }
             name = params.string("display_name")!!
             awareness = (params["awareness_client_id"] as? JsonValue.Number)?.count()
             val query =
@@ -182,6 +187,10 @@ class FakeRelay : Transport {
     }
 
     val connections = ArrayList<Conn>()
+
+    /** The next `session.hello` is answered with this `session.error` code, the socket left open. */
+    @Volatile
+    var refuseHello: String? = null
 
     override fun open(
         url: String,
