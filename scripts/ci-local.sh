@@ -85,7 +85,14 @@ case "${1:-}" in
   checks) job_checks ;;
   links) job_links ;;
   e2e) job_e2e ;;
-  all) job_lint && job_checks && job_links && job_e2e ;;
+  all)
+    # One after another, not chained with `&&`: a function called inside such a chain runs with
+    # `set -e` off, so a failing step in it would not stop the gate.
+    job_lint
+    job_checks
+    job_links
+    job_e2e
+    ;;
   *)
     printf 'usage: %s [lint|checks|links|e2e|all]\n' "$0" >&2
     exit 2
