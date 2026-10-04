@@ -3,6 +3,8 @@
 A JetBrains IDE client for the [Selvage session protocol](https://github.com/selvage-protocol/specification):
 share a link, come edit my code with me.
 
+![IntelliJ IDEA hosting a session: Grace's caret, selection and name drawn in Ada's editor, and Sharing “taskboard” in the status bar](docs/images/marketplace/01-host-editing.png)
+
 Status: in progress, not published on the JetBrains Marketplace yet. Hosting, joining by invite,
 editing together, carets, go to and follow all work today; the gaps are in
 [What is not here yet](docs/limits.md).

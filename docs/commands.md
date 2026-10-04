@@ -10,6 +10,8 @@ A question is an input dialog, a list or a dialog with one affirming button and 
 that names people keeps itself in step with the room while it is open: a person who leaves is
 dropped, a rename is redrawn, and the list closes when nobody is left to pick.
 
+![The Tools menu open on Selvage, listing the twelve commands](images/marketplace/04-actions.png)
+
 ## Host a session
 
 1. A window with no project folder is refused: `open a folder first — hosting shares the folder
@@ -67,6 +69,14 @@ and the sentence says where.
 - **Go to** and **Follow**: with one other person there is no list. A follow ends silently when you
   go somewhere or stop it, and with a sentence when you type, move, the person leaves or their file
   goes.
+
+The **Selvage** tool window has the same rows, and a row's context menu the same actions:
+
+![The Selvage tool window listing Ada and Grace, with Grace's file, and her row's menu offering Go to and Follow](images/marketplace/02-participants.png)
+
+A guest following the host, in the window the room opened on its copy of the files:
+
+![The guest's IDE in safe mode on the room's copy, landed at Ada's caret in Task.kt, with In Ada’s session and Following Ada in the status bar](images/marketplace/03-guest-following.png)
 
 A viewer's documents are read-only in the editor, and `you are a viewer in this room, so its
 documents are read-only.` is said once, as a warning. The room's edits still reach them.

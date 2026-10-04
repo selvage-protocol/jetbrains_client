@@ -4,6 +4,8 @@ The settings are on **Settings → Tools → Selvage** and are stored applicatio
 `options/selvage.xml`. They have the VS Code client's names, defaults and meanings; each row names
 the VS Code setting it matches.
 
+![Settings, Tools, Selvage: the server URL, the display name, the two checkboxes and the cursor label](images/marketplace/05-settings.png)
+
 | Setting | VS Code | Default | What it does |
 |---|---|---|---|
 | Server URL | `selvage.serverUrl` | empty | The server to host on. In full (`wss://host`, `ws://127.0.0.1:8080`) or a domain on its own, which means `wss://<domain>`. Set it and hosting never asks; while it is set, **Change the server** says so and changes nothing. |
