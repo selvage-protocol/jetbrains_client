@@ -87,6 +87,34 @@ class MirrorTest : TestCase() {
         assertEquals("kept\n", Files.readString(outsideFile))
     }
 
+    fun testARoomsCopiesWhoseProcessIsGoneArePrunedAndNothingElse() {
+        val storage = scratch.resolve("storage")
+        val gone = Int.MAX_VALUE.toLong()
+        val dead = Mirror.mint(storage, "r", "dead", pid = gone)
+        dead.materialise(listOf("src/a.txt"))
+        val outside = Files.createDirectories(scratch.resolve("dev/foo"))
+        Files.writeString(outside.resolve("index.js"), "kept\n")
+        Files.createSymbolicLink(dead.root.resolve("linked"), outside)
+        val live = Mirror.mint(storage, "r", "live")
+        val current = Mirror.mint(storage, "r", "current", pid = gone)
+        val otherRoom = Mirror.mint(storage, "other", "dead", pid = gone)
+        val foreign = Files.createDirectories(storage.resolve("rooms/r/foreign"))
+        val marker = Files.readString(live.root.resolve(Mirror.MARKER))
+        assertTrue(marker, marker.contains("\"created\":\""))
+
+        assertEquals(listOf("dead"), Mirror.pruneRoom(storage, "r", "current"))
+        assertFalse(Files.exists(dead.root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertEquals("kept\n", Files.readString(outside.resolve("index.js")))
+        for (kept in listOf(
+            live.root,
+            current.root,
+            otherRoom.root,
+            foreign,
+        )) {
+            assertTrue("$kept was pruned", Files.isDirectory(kept))
+        }
+    }
+
     fun testARepublishRemovesWhatTheRoomNoLongerListsUnlessItIsHeld() {
         val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w")
         mirror.materialise(listOf("a.txt", "b.txt", "c.txt"))

@@ -17,7 +17,8 @@ import java.util.UUID
  * A guest's mirror (`DESIGN.md` §4.2): the room's listing as a real directory, so code insight works
  * on ordinary paths. A cache of the room, never a source of truth: an empty file per listed path,
  * filled when a document is fetched, gone when the session is left. Ported from
- * `vscode_client/src/adapter/mirror.ts`; the marker is the same file.
+ * `vscode_client/src/adapter/mirror.ts`; the marker carries the same fields (room, window, pid and
+ * when it was made), and a room's copies whose process is gone are pruned as VS Code prunes them.
  */
 class Mirror private constructor(
     val room: String,
@@ -104,45 +105,7 @@ class Mirror private constructor(
      * removed as a link, and what it points at is left alone. What cannot be deleted is left in place
      * and the rest still goes, as `File.deleteRecursively` did.
      */
-    fun remove() {
-        if (attributes(root)?.let { it.isDirectory && !it.isSymbolicLink } != true) return
-        Files.walkFileTree(
-            root,
-            object : SimpleFileVisitor<Path>() {
-                override fun visitFile(
-                    file: Path,
-                    attrs: BasicFileAttributes,
-                ): FileVisitResult {
-                    deleteQuietly(file)
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun visitFileFailed(
-                    file: Path,
-                    exc: IOException,
-                ): FileVisitResult {
-                    deleteQuietly(file)
-                    return FileVisitResult.CONTINUE
-                }
-
-                override fun postVisitDirectory(
-                    dir: Path,
-                    exc: IOException?,
-                ): FileVisitResult {
-                    deleteQuietly(dir)
-                    return FileVisitResult.CONTINUE
-                }
-            },
-        )
-    }
-
-    private fun deleteQuietly(path: Path) {
-        try {
-            Files.deleteIfExists(path)
-        } catch (e: IOException) {
-            return
-        }
-    }
+    fun remove() = deleteTree(root)
 
     private fun materialiseOne(path: String): Boolean {
         val segments = path.split('/')
@@ -233,6 +196,7 @@ class Mirror private constructor(
             room: String,
             window: String = UUID.randomUUID().toString(),
             windows: Boolean = RoomPaths.isWindows(),
+            pid: Long = ProcessHandle.current().pid(),
         ): Mirror {
             val segment = sanitiseRoom(room)
             require(segment.isNotEmpty()) { "cannot mirror a room with no name in it" }
@@ -246,12 +210,119 @@ class Mirror private constructor(
                 }
             }
             Files.createDirectories(root)
-            val marker =
-                "{\"room\":${jsonString(
-                    room,
-                )},\"window\":${jsonString(window)},\"pid\":${ProcessHandle.current().pid()}}\n"
+            val created =
+                jsonString(
+                    java.time.Instant
+                        .now()
+                        .toString(),
+                )
+            val marker = "{\"room\":${jsonString(
+                room,
+            )},\"window\":${jsonString(window)},\"pid\":$pid,\"created\":$created}\n"
             Files.writeString(root.resolve(MARKER), marker)
             return Mirror(room, window, root, windows)
+        }
+
+        /**
+         * Removes the room's dead copies: each window directory under `<storage>/rooms/<room>/`, other
+         * than [currentWindow], whose marker this client wrote for [room] and whose process is gone. A
+         * directory with no marker, one it cannot read, or a link is not positively a copy and stays.
+         * Returns the windows removed.
+         */
+        fun pruneRoom(
+            storage: Path,
+            room: String,
+            currentWindow: String,
+        ): List<String> {
+            val roomDir = storage.resolve("rooms").resolve(sanitiseRoom(room))
+            if (!isPlainDirectory(storage.resolve("rooms")) || !isPlainDirectory(roomDir)) return emptyList()
+            val entries =
+                try {
+                    Files.newDirectoryStream(roomDir).use { it.toList() }
+                } catch (e: IOException) {
+                    return emptyList()
+                }
+            val removed = ArrayList<String>()
+            for (dir in entries) {
+                if (!isPlainDirectory(dir)) continue
+                val marker = readMarker(dir) ?: continue
+                if (marker.room != room || marker.window == currentWindow) continue
+                if (ProcessHandle.of(marker.pid).map { it.isAlive }.orElse(false)) continue
+                deleteTree(dir)
+                removed.add(marker.window)
+            }
+            return removed
+        }
+
+        private class Marker(
+            val room: String,
+            val window: String,
+            val pid: Long,
+        )
+
+        /** The marker at [root] when it is one this client (or VS Code) wrote, read without following a link. */
+        private fun readMarker(root: Path): Marker? {
+            val file = root.resolve(MARKER)
+            if (!isPlainFile(file)) return null
+            return try {
+                val text =
+                    Files
+                        .newByteChannel(file, setOf(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))
+                        .use { GrantFolder.readBounded(it, MAX_MARKER_BYTES) } ?: return null
+                val json =
+                    dev.dontblameme.selvage.canonical.CanonicalJson
+                        .parseObject(String(text, Charsets.UTF_8))
+                val pid = (json["pid"] as? dev.dontblameme.selvage.canonical.JsonValue.Number)?.count() ?: return null
+                if (json.string("created") == null) return null
+                Marker(json.string("room") ?: return null, json.string("window") ?: return null, pid)
+            } catch (e: IOException) {
+                null
+            } catch (e: RuntimeException) {
+                null
+            }
+        }
+
+        private const val MAX_MARKER_BYTES = 64 * 1024
+
+        /** Deletes [top] and what is under it, links removed as links and never followed. */
+        private fun deleteTree(top: Path) {
+            if (!isPlainDirectory(top)) return
+            Files.walkFileTree(
+                top,
+                object : SimpleFileVisitor<Path>() {
+                    override fun visitFile(
+                        file: Path,
+                        attrs: BasicFileAttributes,
+                    ): FileVisitResult {
+                        deleteQuietly(file)
+                        return FileVisitResult.CONTINUE
+                    }
+
+                    override fun visitFileFailed(
+                        file: Path,
+                        exc: IOException,
+                    ): FileVisitResult {
+                        deleteQuietly(file)
+                        return FileVisitResult.CONTINUE
+                    }
+
+                    override fun postVisitDirectory(
+                        dir: Path,
+                        exc: IOException?,
+                    ): FileVisitResult {
+                        deleteQuietly(dir)
+                        return FileVisitResult.CONTINUE
+                    }
+                },
+            )
+        }
+
+        private fun deleteQuietly(path: Path) {
+            try {
+                Files.deleteIfExists(path)
+            } catch (e: IOException) {
+                return
+            }
         }
 
         private fun jsonString(text: String): String =

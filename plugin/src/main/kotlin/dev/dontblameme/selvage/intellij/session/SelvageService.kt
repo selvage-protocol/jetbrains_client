@@ -237,7 +237,11 @@ class SelvageService : Disposable {
         val engine = (connected as Connected.Ok).engine
         val mirror =
             try {
-                Mirror.mint(storage, engine.roomId ?: Invites.parseSessionUrl(wire)?.room ?: "room")
+                Mirror.mint(storage, engine.roomId ?: Invites.parseSessionUrl(wire)?.room ?: "room").also { minted ->
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        Mirror.pruneRoom(storage, minted.room, minted.window)
+                    }
+                }
             } catch (e: Exception) {
                 engine.leave()
                 Notifier.error(project, Say.couldNotOpenRoomFolder(e.message ?: e.toString()))
