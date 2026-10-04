@@ -263,6 +263,48 @@ class DocumentSyncTest : BasePlatformTestCase() {
         }
     }
 
+    fun testARefusedRemoteEditIsNeitherAgreedNorPublishedBack() {
+        val reports = Recorded()
+        val guarded = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { false })
+        val document = document("hello\n")
+        guarded.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        document.setReadOnly(true)
+        try {
+            guarded.remoteEdit("a.txt", replica.remote("a.txt", 0, 0, "> "))
+            settle()
+            assertEquals("the editor refused the room's edit", "hello\n", document.text)
+            repeat(3) {
+                guarded.syncAll()
+                settle()
+            }
+            assertEquals("the peer's edit stands in the room", "> hello\n", replica.text("a.txt"))
+            assertEquals("nothing was published back", emptyList<Editing.TextChange>(), replica.published)
+            assertEquals("the refusal is said once", listOf("applyRefused a.txt"), reports.said)
+        } finally {
+            document.setReadOnly(false)
+        }
+        guarded.syncAll()
+        assertEquals("once the document is writable the room's edit lands", "> hello\n", document.text)
+        assertEquals(emptyList<Editing.TextChange>(), replica.published)
+    }
+
+    fun testAReadOnlyDocumentBoundToTheRoomDoesNotOverwriteIt() {
+        val guarded = DocumentSync(project, replica, Recorded(), testRootDisposable, autoSave = { false })
+        replica.texts["a.txt"] = "room\n"
+        val document = document("mine\n")
+        document.setReadOnly(true)
+        try {
+            guarded.bind("a.txt", document, seed = false)
+            guarded.syncAll()
+            settle()
+            assertEquals("room\n", replica.text("a.txt"))
+            assertEquals(emptyList<Editing.TextChange>(), replica.published)
+        } finally {
+            document.setReadOnly(false)
+        }
+    }
+
     fun testAViewersDocumentIsReadOnlyAndTheRoomStillWritesIt() {
         val reports = Recorded()
         val viewing = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { false })

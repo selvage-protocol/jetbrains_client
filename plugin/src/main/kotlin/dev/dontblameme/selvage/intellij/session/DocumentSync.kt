@@ -81,6 +81,9 @@ class DocumentSync(
 
         /** Made read-only by this sync because the session is a viewer's, and given back when unbound. */
         var locked = false
+
+        /** The room text the editor last refused to take, said once until a write lands. */
+        var refused: String? = null
     }
 
     private val bound = HashMap<String, Bound>()
@@ -244,20 +247,43 @@ class DocumentSync(
             if (replica.replaceIf(entry.path, room, rebased.start, rebased.end, rebased.text)) {
                 entry.pending.clear()
                 entry.remote.clear()
-                entry.shadow = Editing.apply(room, rebased)
-                bring(entry, entry.shadow)
+                land(entry, Editing.apply(room, rebased), null)
                 return
             }
         }
         reports.divergence(entry.path)
         entry.pending.clear()
         entry.remote.clear()
-        entry.shadow = replica.text(entry.path)
-        bring(entry, entry.shadow)
+        land(entry, replica.text(entry.path), null)
     }
 
     private fun reconcile(entry: Bound) {
-        if (entry.document.text != entry.shadow) bring(entry, entry.shadow)
+        if (entry.document.text != entry.shadow) land(entry, entry.shadow, null)
+    }
+
+    /**
+     * Writes the room's [target] into the document, by [changes] when they are given. The shadow is
+     * [target] while the write runs, and stays so only when the write landed. When the editor refuses
+     * it, the shadow becomes what the document still holds, so the next sync neither publishes the
+     * document's older text over the room's nor counts the room's edit as agreed: it tries again.
+     */
+    private fun land(
+        entry: Bound,
+        target: String,
+        changes: List<TextChange>?,
+    ): Boolean {
+        entry.shadow = target
+        val landed = if (changes == null) bring(entry, target) else edit(entry, changes)
+        if (landed) {
+            entry.refused = null
+            return true
+        }
+        if (entry.refused != target) {
+            entry.refused = target
+            reports.applyRefused(entry.path)
+        }
+        entry.shadow = entry.document.text
+        return false
     }
 
     /** The document holds what the shadow held; apply the room's text, by its own deltas where they fit. */
@@ -272,13 +298,7 @@ class DocumentSync(
             return
         }
         val changes = changesOf(entry.shadow, deltas, room)
-        entry.shadow = room
-        if (changes == null) {
-            bring(entry, room)
-        } else {
-            edit(entry, changes)
-        }
-        if (autoSave()) scheduleSave(entry)
+        if (land(entry, room, changes) && autoSave()) scheduleSave(entry)
     }
 
     /** The deltas as changes in sequence, when they turn [from] into [to]; null when they do not. */
@@ -324,20 +344,18 @@ class DocumentSync(
     private fun bring(
         entry: Bound,
         target: String,
-    ) {
+    ): Boolean {
         val change = Editing.diff(entry.document.text, target)
-        if (!change.isEmpty) edit(entry, listOf(change))
+        return change.isEmpty || edit(entry, listOf(change))
     }
 
+    /** False when the document refuses the write: it is read-only, and not by this sync's own lock. */
     private fun edit(
         entry: Bound,
         changes: List<TextChange>,
-    ) {
+    ): Boolean {
         val document = entry.document
-        if (!document.isWritable && !entry.locked) {
-            reports.applyRefused(entry.path)
-            return
-        }
+        if (!document.isWritable && !entry.locked) return false
         entry.applying += 1
         // The viewer's lock refuses the person's keystrokes, not the room's own text.
         if (entry.locked) document.setReadOnly(false)
@@ -352,6 +370,7 @@ class DocumentSync(
             if (entry.locked) document.setReadOnly(true)
             entry.applying -= 1
         }
+        return true
     }
 
     /** Each document is written once the room's edits to it settle, on its own clock. */
