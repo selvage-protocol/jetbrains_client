@@ -64,6 +64,21 @@ class MirrorTest : TestCase() {
         }
     }
 
+    fun testRemovingTheMirrorRemovesALinkInItAndNotWhatItPointsAt() {
+        val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w")
+        mirror.materialise(listOf("src/a.txt"))
+        val outside = Files.createDirectories(scratch.resolve("dev/foo"))
+        Files.writeString(outside.resolve("index.js"), "kept\n")
+        val outsideFile = Files.writeString(scratch.resolve("notes.txt"), "kept\n")
+        Files.createDirectories(mirror.root.resolve("node_modules"))
+        Files.createSymbolicLink(mirror.root.resolve("node_modules/foo"), outside)
+        Files.createSymbolicLink(mirror.root.resolve("src/notes.txt"), outsideFile)
+        mirror.remove()
+        assertFalse("the mirror is gone", Files.exists(mirror.root, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+        assertEquals("kept\n", Files.readString(outside.resolve("index.js")))
+        assertEquals("kept\n", Files.readString(outsideFile))
+    }
+
     fun testARepublishRemovesWhatTheRoomNoLongerListsUnlessItIsHeld() {
         val mirror = Mirror.mint(scratch.resolve("storage"), "r", "w")
         mirror.materialise(listOf("a.txt", "b.txt", "c.txt"))

@@ -2,9 +2,11 @@ package dev.dontblameme.selvage.intellij.bridge
 
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.Locale
@@ -113,8 +115,49 @@ class Mirror private constructor(
         }
     }
 
+    /**
+     * Deletes the mirror. Links are not followed: a link in the copy (a package linked in by hand) is
+     * removed as a link, and what it points at is left alone. What cannot be deleted is left in place
+     * and the rest still goes, as `File.deleteRecursively` did.
+     */
     fun remove() {
-        root.toFile().deleteRecursively()
+        if (attributes(root)?.let { it.isDirectory && !it.isSymbolicLink } != true) return
+        Files.walkFileTree(
+            root,
+            object : SimpleFileVisitor<Path>() {
+                override fun visitFile(
+                    file: Path,
+                    attrs: BasicFileAttributes,
+                ): FileVisitResult {
+                    deleteQuietly(file)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(
+                    file: Path,
+                    exc: IOException,
+                ): FileVisitResult {
+                    deleteQuietly(file)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(
+                    dir: Path,
+                    exc: IOException?,
+                ): FileVisitResult {
+                    deleteQuietly(dir)
+                    return FileVisitResult.CONTINUE
+                }
+            },
+        )
+    }
+
+    private fun deleteQuietly(path: Path) {
+        try {
+            Files.deleteIfExists(path)
+        } catch (e: IOException) {
+            return
+        }
     }
 
     private fun materialiseOne(path: String): Boolean {
