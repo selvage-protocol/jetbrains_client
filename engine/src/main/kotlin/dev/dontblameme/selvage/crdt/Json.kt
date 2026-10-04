@@ -191,6 +191,7 @@ object Json {
         val text: String,
     ) {
         var pos = 0
+        private var depth = 0
 
         fun skipWhitespace() {
             while (pos < text.length && text[pos] in " \t\n\r") pos++
@@ -201,14 +202,21 @@ object Json {
         fun value(): YAny {
             if (pos >= text.length) fail("unexpected end")
             return when (text[pos]) {
-                '{' -> obj()
-                '[' -> arr()
+                '{' -> nested { obj() }
+                '[' -> nested { arr() }
                 '"' -> YAny.Str(string())
                 't' -> literal("true", YAny.Bool(true))
                 'f' -> literal("false", YAny.Bool(false))
                 'n' -> literal("null", YAny.Null)
                 else -> number()
             }
+        }
+
+        /** A remote value is read recursively, so its nesting is bounded before the stack is. */
+        private inline fun nested(read: () -> YAny): YAny {
+            if (depth >= YAny.MAX_DEPTH) fail("nested deeper than ${YAny.MAX_DEPTH}")
+            depth++
+            return read().also { depth-- }
         }
 
         private fun literal(

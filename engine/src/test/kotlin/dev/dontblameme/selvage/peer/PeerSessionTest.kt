@@ -2,6 +2,7 @@ package dev.dontblameme.selvage.peer
 
 import dev.dontblameme.selvage.crdt.Doc
 import dev.dontblameme.selvage.crdt.Lib0Decoder
+import dev.dontblameme.selvage.crdt.Lib0Encoder
 import dev.dontblameme.selvage.crdt.Sync
 import dev.dontblameme.selvage.crdt.SyncMessage
 import dev.dontblameme.selvage.crdt.TextDelta
@@ -185,6 +186,75 @@ class PeerSessionTest {
             assertEquals(Outcome.Dropped(DropReason.UNAUTHORISED_CONTENT), receiver.deliver(room.clock, frame))
             assertFalse(receiver.has("README.md"))
         }
+    }
+
+    @Test
+    fun `a value nested past the bound is refused without failing the frame's reader`() {
+        val room = Room()
+        val viewer = room.join("p-viewer", Role.VIEWER)
+        val guest = room.join("p-guest")
+        room.settle()
+        // The host answers one announcement per renewal window.
+        room.advance(300)
+        assertEquals(Role.GUEST, guest.ownRole())
+        val deep = 10_000
+        // A viewer's awareness is applied (§6.1 step 10), so its state reaches the JSON reader.
+        val state = "[".repeat(deep) + "]".repeat(deep)
+        val awareness =
+            Lib0Encoder()
+                .apply {
+                    writeVarUint(1)
+                    writeVarUint(4242)
+                    writeVarUint(1)
+                    writeVarString(state)
+                }.toByteArray()
+
+        // A guest's Update reaches the struct reader: an embed's JSON, and an Any.
+        fun update(
+            ref: Int,
+            body: Lib0Encoder.() -> Unit,
+        ) = Lib0Encoder()
+            .apply {
+                writeVarUint(1)
+                writeVarUint(1)
+                writeVarUint(4242)
+                writeVarUint(0)
+                writeUint8(ref)
+                writeVarUint(1)
+                writeVarString("README.md")
+                body()
+                writeVarUint(0)
+            }.toByteArray()
+        val embed = update(5) { writeVarString(state) }
+        val any =
+            update(8) {
+                writeVarUint(1)
+                repeat(deep) {
+                    writeUint8(117)
+                    writeVarUint(1)
+                }
+                writeUint8(126)
+            }
+        val frameKey = Frames.frameKey(room.roomId, room.roomKey)
+        val frames =
+            listOf(
+                Frames.seal(
+                    room.roomId,
+                    frameKey,
+                    0,
+                    1_000,
+                    viewer.sessionKey,
+                    Sync.encode(SyncMessage.Awareness(awareness)),
+                ),
+                Frames.seal(room.roomId, frameKey, 0, 1_000, guest.sessionKey, Sync.encode(SyncMessage.Update(embed))),
+                Frames.seal(room.roomId, frameKey, 0, 1_001, guest.sessionKey, Sync.encode(SyncMessage.Update(any))),
+            )
+        for (frame in frames) assertEquals(Outcome.Applied(0), room.host.deliver(room.clock, frame))
+        assertTrue(room.host.cursors().isEmpty())
+        assertEquals("", room.host.text("README.md"))
+        room.host.insert("README.md", 0, "still here")
+        room.settle()
+        assertEquals("still here", guest.text("README.md"))
     }
 
     @Test

@@ -84,13 +84,23 @@ sealed interface YAny {
     }
 
     companion object {
+        /**
+         * The most arrays and objects a remote value may open inside one another. Reading is
+         * recursive, so past this a frame is refused as malformed rather than left to overflow the
+         * stack; a cursor or an embed is a few levels deep.
+         */
+        const val MAX_DEPTH = 256
+
         fun of(value: String): YAny = Str(value)
 
         fun of(value: Number): YAny = Num(value.toDouble())
 
         fun of(value: Boolean): YAny = Bool(value)
 
-        fun read(decoder: Lib0Decoder): YAny =
+        fun read(
+            decoder: Lib0Decoder,
+            depth: Int = 0,
+        ): YAny =
             when (val type = decoder.readUint8()) {
                 127 -> {
                     Undefined
@@ -131,12 +141,14 @@ sealed interface YAny {
 
                 118 -> {
                     val count = decoder.readCount()
-                    Obj.of(List(count) { decoder.readVarString() to read(decoder) })
+                    nested(depth)
+                    Obj.of(List(count) { decoder.readVarString() to read(decoder, depth + 1) })
                 }
 
                 117 -> {
                     val count = decoder.readCount()
-                    Arr(List(count) { read(decoder) })
+                    nested(depth)
+                    Arr(List(count) { read(decoder, depth + 1) })
                 }
 
                 116 -> {
@@ -147,6 +159,10 @@ sealed interface YAny {
                     throw DecodeException("unknown Any type $type")
                 }
             }
+
+        private fun nested(depth: Int) {
+            if (depth >= MAX_DEPTH) throw DecodeException("an Any nested deeper than $MAX_DEPTH")
+        }
 
         fun write(
             encoder: Lib0Encoder,
