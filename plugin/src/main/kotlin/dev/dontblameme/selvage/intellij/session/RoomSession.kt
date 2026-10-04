@@ -208,7 +208,7 @@ class RoomSession(
                         override fun after(events: List<VFileEvent>) {
                             val root = folder!!.root.toString()
                             if (events.any {
-                                    it.path.startsWith(root) &&
+                                    isUnder(it.path, root) &&
                                         (it !is com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent)
                                 }
                             ) {
@@ -1120,6 +1120,19 @@ class RoomSession(
             } else {
                 shown
             }
+        }
+
+        /**
+         * Whether a VFS event's path lies in [root] or under it. The event's path is always `/`-separated
+         * and the root is the OS's own spelling, `\` on Windows, so both are compared in one form, and
+         * `/proj2` is not under `/proj`.
+         */
+        fun isUnder(
+            eventPath: String,
+            root: String,
+        ): Boolean {
+            val base = root.replace('\\', '/').trimEnd('/')
+            return eventPath == base || eventPath.startsWith("$base/")
         }
 
         /** How many paths the not-in-the-room notices remember (`MAX_UNLISTED_WARNINGS`). */
