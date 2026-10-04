@@ -368,6 +368,36 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         }
     }
 
+    fun testAnUnsavedCopyWhosePathLeftTheListingStaysOnDisk() {
+        val listing = AtomicReference(listOf("a.txt", "b.txt"))
+        val host = hostEngine("Grace", listing, mapOf("a.txt" to "alpha\n", "b.txt" to "beta\n"))
+        val service = SelvageService.get()
+        service.join(project, host.invite!!)
+        val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
+        val mirror = session.mirror!!
+        eventually("the mirror holds a.txt") { Files.isRegularFile(mirror.root.resolve("a.txt")) }
+        val editor = session.openRoomPath("a.txt")!!
+        eventually("the room's text fills a.txt") { editor.document.text == "alpha\n" }
+        WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(0, "mine ") }
+        eventually("the keystroke reaches the host") { host.text("a.txt") == "mine alpha\n" }
+        assertTrue(FileDocumentManager.getInstance().isDocumentUnsaved(editor.document))
+
+        listing.set(listOf("b.txt"))
+        host.listingChanged()
+        eventually("the kept copy is said") { said.sentences().contains(Say.leftListingKept("a.txt")) }
+        listing.set(listOf("b.txt", "c.txt"))
+        host.listingChanged()
+        eventually("the next listing is in the mirror") { Files.isRegularFile(mirror.root.resolve("c.txt")) }
+        assertTrue("the kept copy is still on disk", Files.isRegularFile(mirror.root.resolve("a.txt")))
+        val file = FileDocumentManager.getInstance().getFile(editor.document)!!
+        assertTrue("and still open", FileEditorManager.getInstance(project).isFileOpen(file))
+        assertEquals("mine alpha\n", editor.document.text)
+        assertEquals("no longer shared", "mine alpha\n", host.text("a.txt"))
+        WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(0, "more ") }
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        assertEquals("a kept copy's keystroke is not published", "mine alpha\n", session.engine.text("a.txt"))
+    }
+
     fun testThePeopleListsFollowTheRoomWhileTheyAreOpen() {
         val root = Files.createDirectories(Path.of(project.basePath!!))
         Files.writeString(root.resolve("README.md"), "hello\n")

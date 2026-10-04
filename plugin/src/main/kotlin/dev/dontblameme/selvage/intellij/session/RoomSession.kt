@@ -93,6 +93,9 @@ class RoomSession(
     private val unlistedSaid = LinkedHashSet<String>()
     private val unlistedSaved = LinkedHashSet<String>()
     private val dropped = HashSet<String>()
+
+    /** Documents with unsaved edits whose path left the listing: no longer shared, kept on disk while open. */
+    private val kept = HashMap<String, Document>()
     private val waitingForText = HashSet<String>()
     private val fetches = HashMap<String, () -> Unit>()
     private var saidWithheld = false
@@ -235,7 +238,7 @@ class RoomSession(
                 )
         }
         for (file in FileEditorManager.getInstance(project).openFiles) opened(file)
-        if (!isHost) applyListing(granted)
+        if (!isHost) applyListing(granted, null)
         openFromRoom()
         sayViewerOnce()
         flushPresence()
@@ -378,7 +381,7 @@ class RoomSession(
             is SessionEvent.Listing -> {
                 listedBefore = granted.toHashSet()
                 granted = event.paths
-                if (!isHost) applyListing(event.paths)
+                if (!isHost) applyListing(event.paths, listedBefore)
             }
 
             is SessionEvent.OpenSet -> {
@@ -524,6 +527,9 @@ class RoomSession(
         }
         val room = mirror ?: return
         if (!room.accepts(path)) return
+        // A copy kept when its path left the room was said to be no longer shared; a listing naming
+        // the path again does not make its unsaved text the room's.
+        if (kept[path] === document) return
         if (path !in granted && path !in documents && !engine.has(path)) {
             if (noteUnlisted(unlistedSaid, path)) Notifier.warn(project, Say.unlistedOpened(path))
             return
@@ -568,14 +574,25 @@ class RoomSession(
     private fun closed(file: VirtualFile) {
         val path = pathOf(file) ?: return
         if (FileEditorManager.getInstance(project).isFileOpen(file)) return
+        kept.entries.removeIf { FileDocumentManager.getInstance().getFile(it.value) == file }
         if (path in fetchedOnly) return
         waitingForText.remove(path)
         sync.unbind(path)
     }
 
-    private fun applyListing(paths: List<String>) {
+    /**
+     * A guest's listing: the documents of paths that left it are ended first, then the mirror is brought
+     * to it, keeping on disk what a document of this window still holds.
+     */
+    private fun applyListing(
+        paths: List<String>,
+        before: Set<String>?,
+    ) {
         val room = mirror ?: return
-        val report = room.republish(paths) { sync.isBound(it) }
+        val listed = paths.toHashSet()
+        dropped.removeAll(listed)
+        if (before != null) dropDocuments(before.filter { it !in listed })
+        val report = room.republish(paths) { held(it) }
         if (report.withheld.isNotEmpty() && !saidWithheld) {
             saidWithheld = true
             Notifier.info(project, Say.projectSettingsWithheld(report.withheld.joinToString(", ")))
@@ -602,17 +619,28 @@ class RoomSession(
                 },
             )
         }
-        val listed = paths.toHashSet()
-        for (path in sync.paths()) {
-            if (path in listed) {
-                dropped.remove(path)
-                continue
-            }
-            if (path in documents) continue
-            dropped.add(path)
+        LocalFileSystem.getInstance().refreshNioFiles(listOf(room.root), true, true, null)
+    }
+
+    /** Whether a document of this window still holds [path]: a shared one, or a kept copy still open. */
+    private fun held(path: String): Boolean {
+        if (sync.isBound(path)) return true
+        val file = kept[path]?.let { FileDocumentManager.getInstance().getFile(it) } ?: return false
+        return FileEditorManager.getInstance(project).isFileOpen(file)
+    }
+
+    /**
+     * Ends this window's share of each path in [gone] it has open: the host deleted or moved the file.
+     * A document with unsaved edits keeps its editor, since closing it would lose what the person
+     * typed, and stops being shared all the same.
+     */
+    private fun dropDocuments(gone: List<String>) {
+        for (path in gone) {
             val document = sync.documentOf(path) ?: continue
+            dropped.add(path)
             sync.unbind(path)
             if (FileDocumentManager.getInstance().isDocumentUnsaved(document)) {
+                kept[path] = document
                 Notifier.warn(project, Say.leftListingKept(path))
             } else {
                 FileDocumentManager
@@ -623,7 +651,6 @@ class RoomSession(
                 Notifier.warn(project, Say.leftListingClosed(path))
             }
         }
-        LocalFileSystem.getInstance().refreshNioFiles(listOf(room.root), true, true, null)
     }
 
     private fun openFromRoom() {
