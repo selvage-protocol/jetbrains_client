@@ -42,8 +42,12 @@ sealed interface Outcome {
         val kind: Long,
     ) : Outcome
 
+    /** Refused at [reason]; [sender], [kind] and [counter] are the envelope's once it parsed. */
     data class Dropped(
         val reason: DropReason,
+        val sender: String? = null,
+        val kind: Long? = null,
+        val counter: Long? = null,
     ) : Outcome
 
     data class Ignored(
@@ -261,7 +265,7 @@ class PeerSession(
         if (reason != null) {
             if (verdict.kind == 0L && resyncFrom == null) resyncFrom = clock
             if (recordFrames) dropped.add(DroppedFrame(index, reason))
-            return Outcome.Dropped(reason)
+            return Outcome.Dropped(reason, verdict.sender, verdict.kind, verdict.counter)
         }
         val kind = verdict.kind ?: 0L
         if (verdict.payload is Payload.State) heldStateFrame = frame

@@ -3,7 +3,12 @@ package dev.dontblameme.selvage.engine
 import dev.dontblameme.selvage.crdt.TextDelta
 import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
+import dev.dontblameme.selvage.sealed.Bytes
+import dev.dontblameme.selvage.sealed.DropReason
+import dev.dontblameme.selvage.sealed.Frames
+import dev.dontblameme.selvage.sealed.Invite
 import dev.dontblameme.selvage.sealed.Role
+import dev.dontblameme.selvage.sealed.SessionKey
 import dev.dontblameme.selvage.wire.Meta
 import dev.dontblameme.selvage.wire.SocketListener
 import dev.dontblameme.selvage.wire.Wire
@@ -191,6 +196,59 @@ class SelvageSessionTest {
         assertEquals(2, seen.all<SessionEvent.Seated>().size)
         assertEquals(listOf(guest.seat), host.peers().map { it.peerId })
         assertEquals(Role.GUEST, guest.ownRole())
+    }
+
+    @Test
+    fun `a refused frame is reported with its reason and sender, and the session goes on`() {
+        val host = host()
+        val seen = Recorded()
+        val guest = join(host, seen)
+        val invite = (Invite.parse(host.invite!!) as Invite.Read.Ok).invite
+        val stranger = SessionKey.mint()
+        val sealed =
+            Frames.seal(
+                invite.room,
+                Frames.frameKey(invite.room, invite.roomKey),
+                0,
+                7,
+                stranger,
+                byteArrayOf(0, 0, 1, 0),
+            )
+        val raw =
+            relay
+                .open(
+                    host.invite!!.substringBefore('#'),
+                    java.time.Duration.ofSeconds(1),
+                    object : SocketListener {
+                        override fun onText(text: String) = Unit
+
+                        override fun onBinary(bytes: ByteArray) = Unit
+
+                        override fun onClose(
+                            code: Int,
+                            reason: String,
+                        ) = Unit
+                    },
+                ).get(1, TimeUnit.SECONDS)
+        raw.sendText(Wire.hello("Mallory", 99))
+        relay.settle()
+        val before = seen.all<SessionEvent.FrameRefused>().size
+        raw.sendBinary(byteArrayOf(1, 2, 3))
+        raw.sendBinary(sealed)
+        relay.settle()
+        val refused = seen.all<SessionEvent.FrameRefused>().drop(before)
+        assertEquals(
+            listOf(
+                Triple(DropReason.BAD_ENVELOPE, null, null),
+                Triple(DropReason.UNCOMMITTED_KEY, Bytes.hex(stranger.id), 7L),
+            ),
+            refused.map { Triple(it.reason, it.sender, it.counter) },
+        )
+        assertTrue(refused[0].frame < refused[1].frame, "$refused")
+        assertNull(guest.ending)
+        assertTrue(guest.insert("README.md", 0, "still "))
+        relay.settle()
+        assertEquals("still ", host.text("README.md"))
     }
 
     @Test

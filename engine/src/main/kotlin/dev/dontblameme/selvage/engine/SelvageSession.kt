@@ -4,10 +4,12 @@ import dev.dontblameme.selvage.peer.Cursor
 import dev.dontblameme.selvage.peer.Ending
 import dev.dontblameme.selvage.peer.HostOptions
 import dev.dontblameme.selvage.peer.Keepalive
+import dev.dontblameme.selvage.peer.Outcome
 import dev.dontblameme.selvage.peer.PeerOptions
 import dev.dontblameme.selvage.peer.PeerSession
 import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
+import dev.dontblameme.selvage.sealed.DropReason
 import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Invite
 import dev.dontblameme.selvage.sealed.Role
@@ -95,6 +97,20 @@ sealed interface SessionEvent {
     ) : SessionEvent
 
     data object HostBack : SessionEvent
+
+    /**
+     * A relayed frame was dropped at the first check of `CANONICAL.md` §6.1 it failed (§13.2's
+     * local report). [frame] counts the binary frames the session has received, from 0;
+     * [sender] is the envelope's key id in hex, and with [kind] and [counter] is null when the
+     * envelope did not parse.
+     */
+    data class FrameRefused(
+        val frame: Int,
+        val reason: DropReason,
+        val sender: String?,
+        val kind: Long?,
+        val counter: Long?,
+    ) : SessionEvent
 
     data class Ended(
         val ending: SessionEnding,
@@ -500,11 +516,27 @@ class SelvageSession private constructor(
         val session = peer ?: return
         while (inbox.isNotEmpty() && !handshaking) {
             when (val frame = inbox.removeFirst()) {
-                is ByteArray -> session.deliver(clock(), frame)
+                is ByteArray -> refused(session, session.deliver(clock(), frame))
                 is String -> event(session, frame)
             }
         }
         afterChange()
+    }
+
+    private fun refused(
+        session: PeerSession,
+        outcome: Outcome,
+    ) {
+        if (outcome !is Outcome.Dropped) return
+        events.add(
+            SessionEvent.FrameRefused(
+                session.frames - 1,
+                outcome.reason,
+                outcome.sender,
+                outcome.kind,
+                outcome.counter,
+            ),
+        )
     }
 
     private fun event(

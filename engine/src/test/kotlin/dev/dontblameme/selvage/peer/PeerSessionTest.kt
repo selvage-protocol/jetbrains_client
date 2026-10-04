@@ -183,7 +183,8 @@ class PeerSessionTest {
         val frameKey = Frames.frameKey(room.roomId, room.roomKey)
         val frame = Frames.seal(room.roomId, frameKey, 0, 1_000, viewer.sessionKey, plaintext)
         for (receiver in listOf(room.host, guest)) {
-            assertEquals(Outcome.Dropped(DropReason.UNAUTHORISED_CONTENT), receiver.deliver(room.clock, frame))
+            val outcome = receiver.deliver(room.clock, frame)
+            assertEquals(DropReason.UNAUTHORISED_CONTENT, (outcome as? Outcome.Dropped)?.reason, "$outcome")
             assertFalse(receiver.has("README.md"))
         }
     }
