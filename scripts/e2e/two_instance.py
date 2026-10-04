@@ -182,6 +182,11 @@ class Ide:
         for part in ("config/options", "system", "plugins", "log", "tmp"):
             (self.home / part).mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(kit["plugin"]) as archive:
+            # The folder the plugin installs into is the zip's top folder; a generic one would be
+            # shared with any other plugin built from a module of the same name.
+            tops = {name.split("/", 1)[0] for name in archive.namelist()}
+            if tops != {"selvage"}:
+                raise SystemExit(f"the plugin's zip installs into {sorted(tops)}, not selvage")
             archive.extractall(self.home / "plugins")
         driver = self.home / "plugins" / "selvage-e2e" / "lib"
         driver.mkdir(parents=True)

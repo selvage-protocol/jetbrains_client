@@ -36,12 +36,23 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
+// The jars in that folder too.
+val pluginJars = setOf("jar", "instrumentedJar", "composedJar")
+tasks
+    .withType<AbstractArchiveTask>()
+    .matching { it.name in pluginJars }
+    .configureEach { archiveBaseName.set("selvage") }
+
 // The IDE carries the Kotlin standard library; the plugin does not ship a second one.
 configurations.named("runtimeClasspath") {
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
 }
 
 intellijPlatform {
+    // The zip, its top folder and so the folder the IDE installs the plugin into are named after
+    // this, not after the Gradle module, so no other plugin built from a module called `plugin`
+    // shares that folder.
+    projectName = "selvage"
     // Indexing the settings page for search starts a whole IDE; the page has five fields.
     buildSearchableOptions = false
     pluginConfiguration {
