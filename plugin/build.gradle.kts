@@ -68,6 +68,12 @@ intellijPlatform {
             untilBuild = provider { null }
         }
     }
+    // `publishPlugin` uploads an update to the JetBrains Marketplace with the token `release.yml`
+    // hands it from the repository secret of the same name. It is read from the environment and
+    // never from a file, and the Marketplace takes a plugin's first upload only by hand.
+    publishing {
+        token = providers.environmentVariable("JETBRAINS_MARKETPLACE_TOKEN")
+    }
     // The Plugin Verifier against the IDE the plugin targets.
     pluginVerification {
         ides {
