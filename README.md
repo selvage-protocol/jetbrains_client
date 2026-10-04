@@ -23,7 +23,7 @@ Build the plugin and install the zip:
 ```
 
 Then in the IDE: **Settings → Plugins → ⚙ → Install Plugin from Disk…**, and pick
-`plugin/build/distributions/selvage-0.1.0.zip`. The first build downloads the IntelliJ IDEA the
+`plugin/build/distributions/selvage-<version>.zip`. The first build downloads the IntelliJ IDEA the
 plugin is compiled against into `~/.gradle`, about 1.5 GB. With Nix, run it inside `nix develop`.
 
 A first session:
