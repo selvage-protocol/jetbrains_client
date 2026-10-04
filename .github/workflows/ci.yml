@@ -59,9 +59,24 @@ jobs:
         with:
           python-version: "3.14.7"
 
-      # What the specification's peer runner seals and verifies frames with.
+      # What the specification's peer runner seals and verifies frames with, and the YAML reader
+      # the release workflow's dry_run guard reads the workflows with.
       - name: install the peer runner's packages
-        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0
+        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0 pyyaml==6.0.3
+
+      # The guard around a workflow's `dry_run` input (`scripts/check_dry_run_gating.py`):
+      # `release.yml` declares one, its plan step carries `inputs.dry_run == true` and every step
+      # after it `inputs.dry_run != true`, which is the whole of what keeps a rehearsal from
+      # cutting a release. `actionlint` cannot see a condition that is *missing* from a step, so
+      # nothing else reads that. This runs the guard's own suite and then the guard over the
+      # workflows here; `scripts/ci-local.sh checks` builds the same two files as the flake check
+      # `dry-run-gating`, whose Python supplies the PyYAML installed above. Then the version
+      # bump's own test, on a scratch copy of the tree under the runner's scratch directory.
+      - name: the release workflow's dry_run gating, and the version bump
+        run: |
+          python3 -B scripts/test_check_dry_run_gating.py
+          python3 -B scripts/check_dry_run_gating.py .github/workflows
+          TMPDIR="$RUNNER_TEMP" scripts/test-bump-version.sh
 
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:

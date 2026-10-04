@@ -219,7 +219,14 @@ jobs:
 
       - name: install the peer runner's packages
         if: inputs.dry_run != true
-        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0
+        run: pip install jsonschema==4.26.0 referencing==0.37.0 cryptography==50.0.0 pyyaml==6.0.3
+
+      - name: the release workflow's dry_run gating, and the version bump
+        if: inputs.dry_run != true
+        run: |
+          python3 -B scripts/test_check_dry_run_gating.py
+          python3 -B scripts/check_dry_run_gating.py .github/workflows
+          TMPDIR="$RUNNER_TEMP" scripts/test-bump-version.sh
 
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         if: inputs.dry_run != true

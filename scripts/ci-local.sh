@@ -4,7 +4,8 @@
 #
 #   scripts/ci-local.sh lint     # ktlint over the Kotlin sources, shellcheck over the scripts, and
 #                                # a syntax check of the end-to-end test's orchestrator
-#   scripts/ci-local.sh checks   # the engine's suite (with the differential test against real
+#   scripts/ci-local.sh checks   # the release workflow's dry_run gating, the version bump's
+#                                # test, the engine's suite (with the differential test against real
 #                                # yjs), the live tests against a real selvaged, the
 #                                # specification's peer runner's own tests, its peer corpus and
 #                                # the corpus's mutation census, the plugin's suite in a test IDE,
@@ -42,7 +43,8 @@ job_lint() {
   say "lint: ktlint"
   ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
   say "lint: shellcheck"
-  shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh
+  shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh \
+    scripts/bump-version.sh scripts/test-bump-version.sh
   python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
 }
 
@@ -59,6 +61,13 @@ job_e2e() {
 job_checks() {
   local system
   system=$(nix eval --raw --impure --expr builtins.currentSystem)
+  # The guard around the release workflow's `dry_run` input reads `.github/workflows`, so none of
+  # the suites below covers it. The flake check runs the same two files `ci.yml` runs, with the
+  # flake's Python supplying the PyYAML that job installs.
+  say "checks: the release workflow's dry_run gating"
+  nix build ".#checks.${system}.dry-run-gating" --no-link --print-build-logs
+  say "checks: the version bump, on a scratch copy of the tree"
+  scripts/test-bump-version.sh
   say "checks: the engine's suite"
   ./gradlew --max-workers=4 --console=plain :engine:test
   say "checks: the engine against a real selvaged"
