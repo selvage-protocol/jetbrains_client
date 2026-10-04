@@ -147,7 +147,11 @@ class SessionOptions(
 /** What a host serves: the names it grants, and a document's text when a peer opens one. */
 class HostContent(
     val listing: () -> List<String>,
-    /** Null declines the path. Called on the session's threads. */
+    /**
+     * Null declines the path. Called outside the session's lock, on the thread whose call found the
+     * read was needed (the network thread, when a peer opened the path), so the session's state stays
+     * readable from other threads while the disk is read.
+     */
     val read: (String) -> String?,
 )
 
@@ -209,6 +213,10 @@ class SelvageSession private constructor(
     private var lastPeers: List<WirePeer> = emptyList()
     private var hostAway = false
     private val readOnce = HashSet<String>()
+
+    /** Paths [serve] found to read, each read by the thread whose call queued it once it lets go of the lock. */
+    private val queuedReads = ThreadLocal.withInitial { ArrayDeque<String>() }
+    private val readingHere = ThreadLocal.withInitial { false }
 
     init {
         options.listener?.let(listeners::add)
@@ -776,23 +784,47 @@ class SelvageSession private constructor(
         session.ending?.let { end(SessionEnding.of(it)) }
     }
 
-    /** A host seeds a path its listing grants and a peer holds, when the replica lacks it (§13.3, §13.7). */
+    /**
+     * A host seeds a path its listing grants and a peer holds, when the replica lacks it (§13.3, §13.7).
+     * The path is queued here, under the lock, and read by [readQueued] once the lock is let go.
+     */
     private fun serve(session: PeerSession) {
-        val host = content ?: return
+        if (content == null) return
         val listed = session.listing.toHashSet()
         for (path in session.openSet()) {
             // Marked before the read: a path whose read fails, however it fails, is not read again.
             if (path !in listed || session.has(path) || !readOnce.add(path)) continue
-            val text =
-                try {
-                    host.read(path)
-                } catch (e: IOException) {
-                    null
-                } catch (e: RuntimeException) {
-                    // An unreadable or unnameable path (`UncheckedIOException`, `InvalidPathException`).
-                    null
+            queuedReads.get().addLast(path)
+        }
+    }
+
+    /** Reads the paths this thread queued, outside the lock, and seeds each one the room still lacks and lists. */
+    private fun readQueued() {
+        val host = content ?: return
+        val queue = queuedReads.get()
+        if (queue.isEmpty() || readingHere.get()) return
+        readingHere.set(true)
+        try {
+            while (true) {
+                val path = queue.removeFirstOrNull() ?: break
+                val text =
+                    try {
+                        host.read(path)
+                    } catch (e: IOException) {
+                        null
+                    } catch (e: RuntimeException) {
+                        // An unreadable or unnameable path (`UncheckedIOException`, `InvalidPathException`).
+                        null
+                    } ?: continue
+                locked {
+                    val session = peer ?: return@locked
+                    if (left || ending != null || session.has(path) || path !in session.listing) return@locked
+                    session.insert(path, 0, text)
+                    afterChange()
                 }
-            if (text != null) session.insert(path, 0, text)
+            }
+        } finally {
+            readingHere.set(false)
         }
     }
 
@@ -834,6 +866,7 @@ class SelvageSession private constructor(
             }
             if (depth > 0) return result
         }
+        readQueued()
         dispatch()
         return result
     }

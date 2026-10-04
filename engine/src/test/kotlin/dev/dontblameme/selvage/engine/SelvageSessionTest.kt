@@ -104,6 +104,37 @@ class SelvageSessionTest {
     }
 
     @Test
+    fun `the host reads a file outside the session's lock`() {
+        val reading = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val host =
+            host(read = { path ->
+                if (path == "README.md") {
+                    reading.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+                files[path]
+            })
+        val guest = join(host)
+        guest.open("README.md")
+        assertTrue(reading.await(5, TimeUnit.SECONDS), "the host never read README.md")
+        val answered =
+            java.util.concurrent.CompletableFuture.supplyAsync {
+                host.peers()
+                host.text("README.md")
+            }
+        try {
+            assertEquals("", answered.get(5, TimeUnit.SECONDS), "the room has no text for it until the read is done")
+        } catch (e: java.util.concurrent.TimeoutException) {
+            fail("the host's state waited on the read")
+        } finally {
+            release.countDown()
+        }
+        relay.settle()
+        assertEquals("hello\n", guest.text("README.md"))
+    }
+
+    @Test
     fun `a path that is not listed is not served`() {
         val host = host()
         val guest = join(host)

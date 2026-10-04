@@ -42,7 +42,9 @@ class GrantFolder(
      * default filesystem provider, which offers no `SecureDirectoryStream`, so the steps cannot be
      * resolved inside the descriptor the step before opened. A residual: a directory on the path
      * swapped for a link between its check and the open can be followed for that one read, and the
-     * containment check after the read narrows that to a swap undone within the read. The threat is a
+     * containment check after the read narrows that to a swap undone within the read. A second: a file
+     * swapped for a named pipe between its check and the open blocks the open until a writer comes,
+     * and the calling thread with it, since Java opens with no `O_NONBLOCK`. The threat in both is a
      * process on the host racing the host's own folder.
      */
     fun read(path: String): Read {

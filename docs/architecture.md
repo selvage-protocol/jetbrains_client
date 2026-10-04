@@ -41,6 +41,10 @@ room's own edits.
 
 ## Threads
 
-The engine runs on its own thread and holds its lock while it reads a host's files for a peer, so
-that read touches the disk only and never an IDE lock. Every engine event is handed to the event
+The engine runs on its own thread. A host reads a file for a peer outside the engine's lock, on the
+thread whose call found the read was needed, which is the network thread when a peer opened the
+path, so the event thread can still read the session while the disk is read. The read takes no IDE
+lock. If a file in the folder is swapped for a named pipe between the check and the open, the read
+waits on that pipe, and the room's network thread waits with it. That is a residual: only a process
+on the host racing the host's own folder can cause it. Every engine event is handed to the event
 thread with the non-modal modality, as the platform requires for code that writes documents.
