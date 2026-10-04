@@ -18,6 +18,10 @@ Environment: SELVAGE_SELVAGED (required), SELVAGE_VSCODE_CLIENT (default: the ne
 checkout, whose packages `npm ci` has installed),
 SELVAGE_E2E_LIBRARY_PATH (the dev shell sets it), SELVAGE_E2E_DEADLINE_S (one wait, default 90),
 SELVAGE_E2E_WATCHDOG_S (the run, default 900).
+
+A run whose scenario passes still fails when either IDE logged an error the plugin caused: an
+`ERROR` (`SEVERE` in `idea.log`) from the plugin's packages, one the platform blames on it, or a
+document changed outside a write-safe context.
 """
 
 import json
@@ -309,6 +313,44 @@ class Ide:
         return out
 
 
+LOG_ENTRY = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ \[ *\d+\] +(\w+) - (\S+) - ")
+PLUGIN_MARKS = ("dev.dontblameme.selvage", "Plugin to blame: Selvage ", "Write-unsafe context")
+
+
+def plugin_errors(log):
+    """The `ERROR` entries of an `idea.log` the plugin caused, each as its header and first lines."""
+    found = []
+    entry = None
+    for line in log.read_text(errors="replace").splitlines():
+        match = LOG_ENTRY.match(line)
+        if match:
+            entry = [line] if match.group(1) in ("SEVERE", "ERROR") else None
+            if entry is not None:
+                found.append(entry)
+        elif entry is not None:
+            entry.append(line)
+    return [
+        entry
+        for entry in found
+        if LOG_ENTRY.match(entry[0]).group(2).startswith("#d.d.s.") or any(m in "\n".join(entry) for m in PLUGIN_MARKS)
+    ]
+
+
+def check_logs(ides):
+    """Fails when an IDE's log holds an error the plugin caused, quoting the first one."""
+    blamed = []
+    for ide in ides:
+        log = ide.home / "log" / "idea.log"
+        if not log.is_file():
+            raise Failure(f"{ide.name} wrote no log at {log}")
+        blamed += [(ide.name, log, entry) for entry in plugin_errors(log)]
+    if blamed:
+        name, log, entry = blamed[0]
+        quoted = "\n    ".join([entry[0]] + [line for line in entry[1:] if "dev.dontblameme.selvage" in line][:8])
+        raise Failure(f"{len(blamed)} error(s) the plugin caused were logged; the first, in {log}:\n    {quoted}")
+    say(f"ok: no error the plugin caused in {', '.join(ide.name for ide in ides)}'s log")
+
+
 def said_one(ide, prefix):
     return wait_for(
         f"{ide.name} says something starting {prefix!r}",
@@ -570,6 +612,7 @@ def main():
         ide_host_with_ts_guest(host, guest, base)
         ts_host_with_ide_guest(guest, base)
         guest.screenshot("end")
+        check_logs((host, guest))
         say(f"PASS: two IDEs and the TypeScript engine, {time.monotonic() - started:.0f}s")
         return 0
     except Failure as failure:
