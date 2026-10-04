@@ -68,6 +68,20 @@ class RoomSession(
     val isHost: Boolean = folder != null
     private val settings = SelvageSettings.get()
 
+    /**
+     * Attached before the room's state is read below. The engine says a change once, so a change
+     * between a read and the attach would be in neither, and a listing that moved there would never
+     * reach this window. Each event is handled on the event thread, after this constructor, which
+     * runs there.
+     */
+    private val stopEngine: () -> Unit =
+        engine.addListener { event ->
+            ApplicationManager.getApplication().invokeLater(
+                { if (!finished) onEvent(event) },
+                ModalityState.nonModal(),
+            )
+        }
+
     private var peers: List<WirePeer> = engine.peers()
     private var documents: List<String> = engine.openSet()
     private var granted: List<String> = engine.listing()
@@ -131,9 +145,9 @@ class RoomSession(
 
     val sync: DocumentSync
     val presence = PresenceRenderer(project)
-    private val stopEngine: () -> Unit
 
     init {
+        stateRead?.invoke(engine)
         rememberHost()
         sync =
             DocumentSync(
@@ -174,13 +188,6 @@ class RoomSession(
                 this,
                 autoSave = { settings.autoSave },
             )
-        stopEngine =
-            engine.addListener { event ->
-                ApplicationManager.getApplication().invokeLater(
-                    { if (!finished) onEvent(event) },
-                    ModalityState.nonModal(),
-                )
-            }
         val connection = project.messageBus.connect(this)
         connection.subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
@@ -1184,6 +1191,11 @@ class RoomSession(
         const val GRANT_REFRESH_MS = 250
         const val FETCH_TIMEOUT_MS = 5000
         const val MIRROR_REMOVE_WAIT_S = 10L
+
+        /** Called once the room's state has been read in the constructor, for a test to move it there. */
+        @org.jetbrains.annotations.TestOnly
+        @Volatile
+        internal var stateRead: ((SelvageSession) -> Unit)? = null
 
         const val RECONNECTING_TOOLTIP = "The connection dropped; trying to rejoin the room."
 

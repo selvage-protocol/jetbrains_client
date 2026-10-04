@@ -350,6 +350,40 @@ class LiveSessionTest : HeavyPlatformTestCase() {
     ): SelvageSession =
         SelvageSession.host(base, HostContent({ listing.get() }, { texts[it] }), options(name)).also { engines.add(it) }
 
+    fun testAListingThatMovesWhileTheSessionIsSetUpReachesTheWindow() {
+        val listing = AtomicReference(listOf("README.md"))
+        val host = hostEngine("Grace", listing, mapOf("README.md" to "hello\n", "b.txt" to ""))
+        val guest = SelvageSession.join(host.invite!!, options("Bob")).also { engines.add(it) }
+        eventually("the guest has the listing") { guest.listing() == listOf("README.md") }
+        val moved = listOf("README.md", "b.txt")
+        val heard = CopyOnWriteArrayList<List<String>>()
+        guest.addListener { if (it is dev.dontblameme.selvage.engine.SessionEvent.Listing) heard.add(it.paths) }
+        // The listing moves, and the engine has said so, after the session read the room and before
+        // the constructor is done.
+        RoomSession.stateRead = {
+            listing.set(moved)
+            host.listingChanged()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (moved !in heard) {
+                if (System.nanoTime() > deadline) throw AssertionError("the guest never heard the moved listing")
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5))
+            }
+        }
+        val mirror = Mirror.mint(scratch.resolve("guest"), "room")
+        val session =
+            try {
+                RoomSession(guest, project, null, mirror, joinedWith = host.invite)
+            } finally {
+                RoomSession.stateRead = null
+            }
+        try {
+            eventually("the moved listing reaches the window") { session.listed() == moved }
+            eventually("and the mirror") { Files.isRegularFile(mirror.root.resolve("b.txt")) }
+        } finally {
+            session.end()
+        }
+    }
+
     fun testAViewersDocumentsAreReadOnlyAndTheRoomStillReachesThem() {
         val host = hostEngine("Grace", AtomicReference(listOf("README.md")), mapOf("README.md" to "hello\n"))
         val viewer = SelvageSession.join(host.invite!!, options("Vic"), Role.VIEWER)
@@ -565,6 +599,7 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         service.join(project, host.invite!!)
         val session = service.current ?: throw AssertionError("no session; said: ${said.sentences()}")
         eventually("the host is named") { session.statusText() == Words.guestIdentity("Grace") }
+        eventually("the room's listing is in") { session.listed() == listOf("README.md") }
         prompts.choices.add(0)
         service.openDocument(project)
         eventually("the room's text fills the mirror file") {

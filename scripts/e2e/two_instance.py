@@ -521,6 +521,7 @@ def ts_host_with_ide_guest(guest, base):
     invite = ts.ask(op="host", base=base, name="Tess", files={SEED_PATH: SEED_TEXT})["invite"]
     guest.action("Selvage.Join", inputs=[invite])
     session_field(guest, "status", lambda s: s == "In Tess’s session", "the IDE guest is in the TypeScript host's room")
+    session_field(guest, "offered", lambda o: SEED_PATH in o, "the room offers the TypeScript host's file")
     guest.action("Selvage.OpenDocument", choices=[SEED_PATH])
     session_field(guest, "documents", lambda d: d.get(SEED_PATH) == SEED_TEXT, "the TypeScript host's text arrives")
     guest.ask(op="type", path=SEED_PATH, offset=0, text=MARKER_GUEST)
