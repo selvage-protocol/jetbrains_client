@@ -411,6 +411,10 @@ jobs:
             if ! git push origin "v${VERSION}"; then
               echo "push of v${VERSION} was rejected; another run may have created it first"
               remote_refs=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")
+              if [ -z "$remote_refs" ]; then
+                printf 'refusing: the push of v%s failed and the remote has no such tag\n' "$VERSION" >&2
+                exit 1
+              fi
             fi
           fi
           if [ -n "$remote_refs" ]; then
@@ -424,7 +428,9 @@ jobs:
           fi
 
       # The notes are the change notes the Marketplace shows, which are HTML GitHub renders as it
-      # stands once the indentation that would make it a code block is gone.
+      # stands once the indentation that would make it a code block is gone. `--verify-tag` keeps
+      # `gh` from creating a missing tag itself, at the default branch's tip rather than this
+      # run's commit.
       - name: create the GitHub Release
         if: inputs.dry_run != true
         env:
@@ -442,7 +448,8 @@ jobs:
             echo "release v${VERSION} already exists; refreshing the zip."
             gh release upload "v${VERSION}" "$ZIP" --clobber
           else
-            gh release create "v${VERSION}" --title "v${VERSION}" --notes-file "$RUNNER_TEMP/release-notes.md" "$ZIP"
+            gh release create "v${VERSION}" --verify-tag --title "v${VERSION}" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" "$ZIP"
           fi
 
       # The token reaches Gradle as an environment variable and never as an argument or a file. The
