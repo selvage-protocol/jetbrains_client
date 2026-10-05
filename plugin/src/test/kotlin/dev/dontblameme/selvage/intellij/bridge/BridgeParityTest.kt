@@ -50,13 +50,18 @@ class BridgeParityTest : TestCase() {
         constant("words", "LEAVE_HOST_LABEL") { Words.LEAVE_HOST_LABEL }
         constant("words", "LEAVE_ASKING_LABEL") { Words.LEAVE_ASKING_LABEL }
         constant("words", "LEAVE_CANCEL_LABEL") { Words.LEAVE_CANCEL_LABEL }
+        constant("words", "HOST_LEAVE_CONSEQUENCE") { Words.HOST_LEAVE_CONSEQUENCE }
         constant("words", "HOST_LEAVE_QUESTION") { Words.HOST_LEAVE_QUESTION }
+        constant("words", "DOWNLOAD_COST_MANY_SENTENCE") { Words.DOWNLOAD_COST_MANY_SENTENCE }
         constant("words", "SESSION_ENDED_MESSAGE") { Words.SESSION_ENDED_MESSAGE }
         for (name in names) {
             call("words", "hostingIdentity", name) { Words.hostingIdentity(name) }
             call("words", "guestIdentity", name) { Words.guestIdentity(name) }
             call("words", "hostLeftSentence", name) { Words.hostLeftSentence(name) }
             call("words", "hostBackSentence", name) { Words.hostBackSentence(name) }
+            call("words", "goToNotInFile", name) { Words.goToNotInFile(name) }
+            call("words", "goToCursorNotFound", name) { Words.goToCursorNotFound(name) }
+            call("words", "downloadCostSentence", name) { Words.downloadCostSentence(name) }
             call("words", "followEndedByTyping", name) { Words.followEndedByTyping(name) }
             call("words", "followEndedByMoving", name) { Words.followEndedByMoving(name) }
             call("words", "followEndedByLeaving", name) { Words.followEndedByLeaving(name) }

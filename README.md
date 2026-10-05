@@ -50,7 +50,7 @@ clients use.
 | Join a session from an invite link | Join the room the link names, in a new window on a copy of the room's files. |
 | Copy the invite link | Put the invite on the clipboard. The status bar's `Copy invite link` reads `Copied` for a moment. |
 | Open a document from the room | Open one of the room's documents. A host is told its own files are the room's. |
-| Download a file from the room | Fill a file, or the whole listing, from the room. Fetching opens the file in the room, so everyone receives it. |
+| Download a file from the room | Fill a file, or the whole listing, from the room. Downloading opens the file in the room, so everyone there gets its text. |
 | Leave the session | Leave. A host is asked first, because leaving ends the room for everyone. |
 | Set the name other participants see | Say the name in force, with a button to change it. |
 | Change the server | Say the server the next host uses, with a button to change it. |

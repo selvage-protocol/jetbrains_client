@@ -210,10 +210,6 @@ object Say {
     fun fetchAllQuestion(count: String) =
         "Selvage: fetch all $count listed files? Everyone in the room receives them, and they are stored on your disk."
 
-    fun fetchingOpensOne(path: String) = "Selvage: fetching opens $path in the room, so every peer receives it."
-
-    fun fetchingOpensMany() = "Selvage: fetching opens them in the room, so every peer receives them."
-
     fun fetched() = "Selvage: fetched the files."
 
     fun fetching(path: String) = "Selvage: fetching $path…"
@@ -230,11 +226,7 @@ object Say {
 
     fun noOtherParticipants() = "Selvage: no other participants yet."
 
-    fun nothingToGoTo(name: String) = "Selvage: nothing to go to: $name is not in a document."
-
     fun nothingToFollow(name: String) = "Selvage: nothing to follow: $name is not in a document."
-
-    fun caretDoesNotResolve(name: String) = "Selvage: nothing to go to: $name's caret does not resolve here."
 
     fun notFollowing() = "Selvage: not following anyone."
 
@@ -256,9 +248,8 @@ object Say {
         root: String,
     ) = "$sentence Your copy is kept at $root."
 
-    /** The host's leave question: the shared one without its clause about the last keystrokes (`HOST_LEAVE_ASKING`). */
-    val HOST_LEAVE_ASKING: String =
-        Words.HOST_LEAVE_QUESTION.substring(0, Words.HOST_LEAVE_QUESTION.indexOf(", and your last")) + "."
+    /** The host's leave question: the shared one's first sentence, without the second about the last keystrokes (`HOST_LEAVE_ASKING`). */
+    val HOST_LEAVE_ASKING: String = Words.HOST_LEAVE_CONSEQUENCE
 
     // --- the name -----------------------------------------------------------------------------
 
