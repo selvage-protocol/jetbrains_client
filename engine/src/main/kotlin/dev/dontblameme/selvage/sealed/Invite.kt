@@ -206,6 +206,10 @@ object Urls {
         if (room.isNullOrEmpty() || token.isNullOrEmpty()) return link
         val port = if (uri.port == -1) "" else ":${uri.port}"
         val base = sessionBase("$scheme://${uri.host}$port${(uri.rawPath ?: "").trimEnd('/')}") ?: return link
-        return sessionUrl(base, room, token) + fragment
+        // The query is carried as it was written, so a `room` or `token` named twice is still
+        // there for `Invite.parse` to refuse by name: rebuilding it from the two values read
+        // above would collapse the repeat, and which room a link names must not depend on which
+        // of two values a rewrite happened to take (§5.1).
+        return "$base$ENDPOINT_PATH?$query$fragment"
     }
 }
