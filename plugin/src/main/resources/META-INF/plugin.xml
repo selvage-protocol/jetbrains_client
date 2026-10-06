@@ -24,6 +24,13 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.3.0</p>
+    <ul>
+      <li>An invite that names a room, a token or a key more than once is refused by name instead of silently joining the first one it names.</li>
+      <li>A full server is recognized from its code, so the server-is-full sentence no longer depends on the wording the server happens to use.</li>
+      <li>A reconnect no longer treats an unrecognized close as a final refusal, and a capacity close is retried.</li>
+      <li>Engine faults are written to the IDE log with their stack trace, and a guest's project that fails to open records why.</li>
+    </ul>
     <p>0.2.0</p>
     <ul>
       <li>A guest's copy of the room opens as a project named "Selvage session" instead of a random id.</li>
