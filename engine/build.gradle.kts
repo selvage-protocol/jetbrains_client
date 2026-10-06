@@ -69,6 +69,13 @@ fun Test.configureSuite() {
             .dir(it.resolve("vectors"))
             .withPropertyName("specificationVectors")
             .withPathSensitivity(PathSensitivity.RELATIVE)
+        // The schemas and the bounds registry beside them, tracked for the same reason. A `schema`
+        // directory that has lost the registry is a test failure naming it, not a Gradle input
+        // error: only the directory is declared.
+        inputs
+            .dir(it.resolve("schema"))
+            .withPropertyName("specificationSchema")
+            .withPathSensitivity(PathSensitivity.RELATIVE)
     }
     testLogging {
         events("failed")
