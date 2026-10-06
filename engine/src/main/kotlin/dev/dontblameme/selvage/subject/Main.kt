@@ -4,6 +4,7 @@ import dev.dontblameme.selvage.canonical.CanonicalJson
 import dev.dontblameme.selvage.canonical.JsonValue
 import dev.dontblameme.selvage.canonical.MalformedJson
 import dev.dontblameme.selvage.canonical.json
+import dev.dontblameme.selvage.engine.StderrErrorSink
 import dev.dontblameme.selvage.peer.Keepalive
 import dev.dontblameme.selvage.peer.PeerMutation
 import dev.dontblameme.selvage.peer.PeerOptions
@@ -325,7 +326,7 @@ object Main {
                 try {
                     subject.tick()
                 } catch (e: RuntimeException) {
-                    System.err.println("tick: $e")
+                    StderrErrorSink.onError("tick", e)
                 }
             },
             TICK_MS,

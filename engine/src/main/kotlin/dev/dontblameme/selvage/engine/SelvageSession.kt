@@ -143,6 +143,8 @@ class SessionOptions(
     val meta: (String, Duration) -> Meta = { base, timeout -> Meta.fetch(base, timeout) },
     /** Attached before the first event, so `Seated` is not missed. */
     val listener: SessionListener? = null,
+    /** Where a caught error goes; the plugin backs it with the platform's logger. */
+    val errors: ErrorSink = StderrErrorSink,
 )
 
 /** What a host serves: the names it grants, and a document's text when a peer opens one. */
@@ -665,9 +667,24 @@ class SelvageSession private constructor(
         try {
             block()
         } catch (e: Exception) {
-            System.err.println("the session could not handle an event: $e")
+            report("the session could not handle an event", e)
         } catch (e: StackOverflowError) {
-            System.err.println("the session could not handle an event: $e")
+            report("the session could not handle an event", e)
+        }
+    }
+
+    /**
+     * Hands a caught error to the sink. A caller's broken sink must not take the frame or the
+     * clock with it, so the last resort is the bounded line the sink replaced, not a stack trace.
+     */
+    private fun report(
+        what: String,
+        error: Throwable,
+    ) {
+        try {
+            options.errors.onError(what, error)
+        } catch (e: Exception) {
+            System.err.println("$what: $error")
         }
     }
 
@@ -887,7 +904,7 @@ class SelvageSession private constructor(
                         try {
                             listener.onEvent(next)
                         } catch (e: RuntimeException) {
-                            System.err.println("a session listener failed: $e")
+                            report("a session listener failed", e)
                         }
                     }
                 }

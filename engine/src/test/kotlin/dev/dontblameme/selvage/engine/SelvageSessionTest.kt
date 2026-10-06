@@ -12,13 +12,18 @@ import dev.dontblameme.selvage.sealed.SessionKey
 import dev.dontblameme.selvage.wire.Meta
 import dev.dontblameme.selvage.wire.SocketListener
 import dev.dontblameme.selvage.wire.Wire
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -48,20 +53,24 @@ class SelvageSessionTest {
     private fun options(
         name: String,
         recorded: Recorded,
+        errors: ErrorSink = StderrErrorSink,
+        listener: SessionListener? = SessionListener { recorded.events.add(it) },
     ) = SessionOptions(
         name,
         transport = relay,
         scheduler = scheduler,
         meta = { _, _ -> Meta(null, emptyList(), emptyList(), null, 2_000) },
-        listener = { recorded.events.add(it) },
+        listener = listener,
+        errors = errors,
     )
 
     private fun host(
         recorded: Recorded = Recorded(),
+        errors: ErrorSink = StderrErrorSink,
         read: (String) -> String? = { files[it] },
     ): SelvageSession =
         SelvageSession
-            .host("ws://relay.test", HostContent({ listed }, read), options("Ada", recorded))
+            .host("ws://relay.test", HostContent({ listed }, read), options("Ada", recorded, errors))
             .also { sessions.add(it) }
             .also { relay.settle() }
 
@@ -531,5 +540,74 @@ class SelvageSessionTest {
         assertEquals("hello\n", guest.text("README.md"))
         assertEquals(1, failed, "a path whose read failed is not read again")
         assertEquals(emptyList(), relay.escaped.map { it.toString() })
+    }
+
+    @Test
+    fun `an error at the handling boundary reaches the supplied sink with the throwable`() {
+        val reported = CopyOnWriteArrayList<Pair<String, Throwable>>()
+        val thrown = StackOverflowError()
+        val host =
+            host(
+                errors = { what, error -> reported.add(what to error) },
+                read = { if (it == "src/main.rs") throw thrown else files[it] },
+            )
+        val guest = join(host)
+        guest.open("src/main.rs")
+        relay.settle()
+        advance(300)
+        assertEquals(1, reported.size, "the sink hears the error the boundary caught")
+        assertSame(thrown, reported.single().second)
+        assertEquals("the session could not handle an event", reported.single().first)
+        assertNull(host.ending, "the caught error did not end the session")
+    }
+
+    @Test
+    fun `an error a listener raises reaches the supplied sink with the throwable`() {
+        val reported = CopyOnWriteArrayList<Pair<String, Throwable>>()
+        val thrown = IllegalStateException("a listener cannot read this event")
+        val first = AtomicBoolean(true)
+        SelvageSession
+            .host(
+                "ws://relay.test",
+                HostContent({ listed }, { files[it] }),
+                options(
+                    "Ada",
+                    Recorded(),
+                    errors = { what, error -> reported.add(what to error) },
+                    listener = SessionListener { if (first.compareAndSet(true, false)) throw thrown },
+                ),
+            ).also { sessions.add(it) }
+        relay.settle()
+        assertEquals(1, reported.size, "the sink hears one report for one raised exception")
+        assertSame(thrown, reported.single().second)
+        assertEquals("a session listener failed", reported.single().first)
+    }
+
+    @Test
+    fun `with no sink the default reports one bounded line and the session survives`() {
+        val thrown = StackOverflowError()
+        val printed = ByteArrayOutputStream()
+        val original = System.err
+        var session: SelvageSession? = null
+        System.setErr(PrintStream(printed, true, StandardCharsets.UTF_8))
+        try {
+            session =
+                host(
+                    read = { if (it == "src/main.rs") throw thrown else files[it] },
+                )
+            val guest = join(session)
+            guest.open("src/main.rs")
+            relay.settle()
+            advance(300)
+        } finally {
+            System.setErr(original)
+        }
+        val lines = printed.toString(StandardCharsets.UTF_8).lines().filter { it.isNotBlank() }
+        assertEquals(
+            listOf("the session could not handle an event: $thrown"),
+            lines,
+            "one bounded line, not a stack trace per frame",
+        )
+        assertNull(session.ending, "the default sink kept the session")
     }
 }
