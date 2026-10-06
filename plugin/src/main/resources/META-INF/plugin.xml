@@ -24,6 +24,13 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.2.0</p>
+    <ul>
+      <li>A guest's copy of the room opens as a project named "Selvage session" instead of a random id.</li>
+      <li>Following someone lands on their first move, including into a file you do not have open yet.</li>
+      <li>Joining a session no longer logs a write-unsafe context error in the IDE.</li>
+      <li>Plainer wording on the settings page, and the go-to refusals, the first download notice and the host's leave question say the same words as the VS Code client.</li>
+    </ul>
     <p>0.1.0, the first release.</p>
     <ul>
       <li>Host a session from the open project, or join one from an invite link.</li>
