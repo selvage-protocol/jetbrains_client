@@ -7,7 +7,7 @@ import kotlin.math.max
 
 /**
  * The words every client says at the same moments, ported from `vscode_client/src/bridge/words.ts`
- * so this client says the same sentence as the others. `WordsParityTest` runs the TypeScript source
+ * so this client says the same sentence as the others. `BridgeParityTest` runs the TypeScript source
  * beside this file and fails on any difference in output.
  */
 object Words {
