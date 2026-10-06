@@ -7,6 +7,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
@@ -14,6 +15,7 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.util.Alarm
+import dev.dontblameme.selvage.engine.ErrorSink
 import dev.dontblameme.selvage.engine.HostContent
 import dev.dontblameme.selvage.engine.SelvageSession
 import dev.dontblameme.selvage.engine.SessionOptions
@@ -53,7 +55,16 @@ class SelvageService : Disposable {
     var storage: Path = PathManager.getSystemDir().resolve("selvage")
 
     /** The engine's options for a display name; a test shortens the clocks here. */
-    var sessionOptions: (String) -> SessionOptions = { SessionOptions(it, client = CLIENT) }
+    var sessionOptions: (String) -> SessionOptions = { SessionOptions(it, client = CLIENT, errors = errorSink) }
+
+    /**
+     * Where a caught error is recorded. The engine has no logger of its own, so the plugin backs
+     * its sink and its own swallowed failures with the platform's, which shows the stack trace.
+     */
+    var errorSink: ErrorSink =
+        ErrorSink { what, error ->
+            Logger.getInstance(SelvageService::class.java).error(what, error)
+        }
 
     /** Opens a guest's mirror as a project; a test attaches it to a project it already has. */
     var openMirror: (Path) -> Project? = ::openMirrorProject
@@ -247,12 +258,7 @@ class SelvageService : Disposable {
                 Notifier.error(project, Say.couldNotOpenRoomFolder(e.message ?: e.toString()))
                 return
             }
-        val room =
-            try {
-                openMirror(mirror.root)
-            } catch (e: Exception) {
-                null
-            }
+        val room = openGuestRoom(mirror.root)
         if (room == null) {
             engine.leave()
             mirror.remove()
@@ -263,6 +269,18 @@ class SelvageService : Disposable {
         adopt(session)
         whenSettled(session) { sayJoined(session) }
     }
+
+    /**
+     * Opens a guest's mirror as a project, recording why when the IDE refuses it: the sentence the
+     * person is shown says only that it did not open, so the cause has to reach the log instead.
+     */
+    internal fun openGuestRoom(root: Path): Project? =
+        try {
+            openMirror(root)
+        } catch (e: Exception) {
+            errorSink.onError("the IDE did not open the guest's room folder", e)
+            null
+        }
 
     /** Waits for the room's first listing or open set, at most [timeoutMs], before [then]. */
     private fun whenSettled(
