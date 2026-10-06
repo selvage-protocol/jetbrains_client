@@ -104,6 +104,11 @@ class FakeRelay : Transport {
         }
 
         private fun hello(params: JsonValue.Obj) {
+            closeHello?.let { code ->
+                closeHello = null
+                gone(code, closeHelloReason)
+                return
+            }
             refuseHello?.let { code ->
                 refuseHello = null
                 event("session.error", JsonValue.Obj.of("code" to code.json(), "message" to "refused".json()))
@@ -206,6 +211,17 @@ class FakeRelay : Transport {
     /** The next `session.hello` is answered with this `session.error` code, the socket left open. */
     @Volatile
     var refuseHello: String? = null
+
+    /**
+     * The next `session.hello` is closed with this code and [closeHelloReason] before the seat, the
+     * way a server refuses a join (§11). Null lets the next hello through.
+     */
+    @Volatile
+    var closeHello: Int? = null
+
+    /** What that close carries; a server's close reason is its own words, not a protocol value. */
+    @Volatile
+    var closeHelloReason = "refused before the seat"
 
     override fun open(
         url: String,

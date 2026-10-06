@@ -203,7 +203,14 @@ object Invites {
     const val HOST_CHECK = "check the address is the one the server printed, and that the server is running."
     const val JOIN_CHECK = "check the invite is complete, and that the server is running at the address it names."
 
-    private val SERVER_FULL = Regex("^server full\\b")
+    /** §2.1's code for a room mint the server's cap refused. */
+    const val SERVER_FULL = "x.server_full"
+
+    /** The reference server's own wording for that fault, kept only as a fallback for a code this client does not know. */
+    private val SERVER_FULL_WORDS = Regex("^server full\\b")
+
+    /** The codes a capacity fault arrives under: the refused mint, and §11's 1013 close at the cap. */
+    private val CAPACITY_CODES = setOf(SERVER_FULL, Wire.TRY_AGAIN_LATER)
 
     /** What a first connect that did not become a session says (`connectRefusal`). */
     fun connectRefusal(
@@ -212,13 +219,15 @@ object Invites {
     ): String {
         val refusal = error as? SessionException ?: return "No server answered — $check"
         val message = refusal.message ?: ""
-        if (SERVER_FULL.containsMatchIn(message) || (refusal.code == "closed" && message.contains(" server full"))) {
+        if (refusal.code in CAPACITY_CODES ||
+            SERVER_FULL_WORDS.containsMatchIn(message) ||
+            (refusal.code == "closed" && message.contains(" server full"))
+        ) {
             return "The server is full. Try again in a few minutes."
         }
         return when (refusal.code) {
             "room_unknown" -> "That invite names a room the server does not have. Ask the host for a fresh invite."
             "token_invalid" -> "That invite is no longer valid. Ask the host for a fresh invite."
-            "host_present" -> "That room already has a host."
             ROOM_FULL -> "The room is full — it seats no more people."
             "room_gone" -> "That room is gone."
             "hello_required", "timeout", "connect", "closed" -> "No server answered — $check"
