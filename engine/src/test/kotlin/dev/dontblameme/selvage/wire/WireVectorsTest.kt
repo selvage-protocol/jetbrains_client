@@ -20,6 +20,20 @@ class WireVectorsTest {
         files.associate { it.name.take(3) to CanonicalJson.parseObject(it.readText()) }
     }
 
+    /** The corpus size the specification's own suite pins, so a vector missing here fails the same way. */
+    private val expectedWireVectors: Int by lazy {
+        val file = File(TestPaths.specification, "schema/validate.py")
+        val pin =
+            if (file.isFile) {
+                Regex("^EXPECTED_WIRE_VECTORS\\s*=\\s*(\\d+)\\s*$", RegexOption.MULTILINE)
+                    .find(file.readText())
+            } else {
+                null
+            }
+        pin?.groupValues?.get(1)?.toInt()
+            ?: fail("no EXPECTED_WIRE_VECTORS in $file: cannot tell how many wire vectors there are")
+    }
+
     private fun steps(
         id: String,
         op: String,
@@ -32,15 +46,13 @@ class WireVectorsTest {
 
     @Test
     fun `every server frame a vector expects is an envelope this client reads`() {
-        var read = 0
         for ((id, _) in vectors) {
             for (text in steps(id, "expect")) {
                 val message = ServerMessage.parse(text) ?: fail("$id: $text is not read")
                 assertTrue(message.event != null || message.id != null, "$id: $text")
-                read += 1
             }
         }
-        assertTrue(read > 100, "only $read frames were read")
+        assertEquals(expectedWireVectors, vectors.size, "wire vectors read")
     }
 
     @Test
