@@ -148,11 +148,25 @@ class Subject(
                 }
 
                 is Invite.Read.Refused -> {
+                    // A guard removed from the link is the wrong client the vector claims to
+                    // catch, and it seats: the fragment's guard takes the link as it stands —
+                    // this subject cannot hold half a fragment, so it reports a seat and no
+                    // session — and the repeat rule's takes the first of each name written
+                    // twice, which is the order-dependence `§5.1` forbids.
                     if ("accept-partial-fragment" in linkMutations && '#' in link) {
                         clear = true
                         return
                     }
-                    throw SubjectRefusal(read.reason)
+                    if ("accept-repeated-key" !in linkMutations) throw SubjectRefusal(read.reason)
+                    when (val collapsed = Invite.parse(firstOfEach(link))) {
+                        is Invite.Read.Ok -> {
+                            collapsed.invite
+                        }
+
+                        is Invite.Read.Refused -> {
+                            throw SubjectRefusal(read.reason)
+                        }
+                    }
                 }
             }
         val keepalive = command.obj("keepalive") ?: throw SubjectRefusal("`join` needs a `keepalive`")
@@ -232,7 +246,41 @@ class Subject(
     ) : RuntimeException(words)
 
     private companion object {
-        val LINK_MUTATIONS = setOf("accept-partial-fragment")
+        val LINK_MUTATIONS = setOf("accept-partial-fragment", "accept-repeated-key")
+
+        val queryNames = listOf("room", "token")
+        val fragmentNames = listOf("k", "h")
+
+        /**
+         * The link [`LINK_MUTATIONS`]'s `accept-repeated-key` seats: the first of each repeated
+         * `room`/`token`/`k`/`h` kept and the rest dropped, so which room it joins depends on the
+         * order a query or a fragment was written in.
+         */
+        fun firstOfEach(link: String): String {
+            val hash = link.indexOf('#')
+            val address = if (hash == -1) link else link.substring(0, hash)
+            val fragment = if (hash == -1) "" else link.substring(hash + 1)
+            val queryAt = address.indexOf('?')
+            val endpoint =
+                if (queryAt == -1) {
+                    address
+                } else {
+                    address.substring(0, queryAt + 1) + keepFirst(address.substring(queryAt + 1), queryNames)
+                }
+            return if (hash == -1) endpoint else "$endpoint#${keepFirst(fragment, fragmentNames)}"
+        }
+
+        /** One `&`-separated part, the first pair of each named one kept and the others dropped. */
+        fun keepFirst(
+            part: String,
+            names: List<String>,
+        ): String {
+            val seen = HashSet<String>()
+            return part
+                .split('&')
+                .filter { pair -> pair.substringBefore('=').let { it !in names || seen.add(it) } }
+                .joinToString("&")
+        }
 
         fun text(
             command: JsonValue.Obj,

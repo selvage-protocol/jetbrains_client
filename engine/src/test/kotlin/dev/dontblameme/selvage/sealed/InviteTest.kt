@@ -41,6 +41,37 @@ class InviteTest {
         assertEquals("wss://example.org/p/session?room=R1&token=T1", invite.socketUrl)
     }
 
+    /**
+     * §5.1: a page link has no server to refuse a repeat, so the receiver refuses it locally, and
+     * the refusal names the parameter — the rewrite may not decide which of two values wins.
+     */
+    @Test
+    fun `refuses a page link that repeats a join key by name`() {
+        assertEquals(
+            "the invite names `room` twice",
+            refused("https://example.org/?room=R&room=S&token=T#k=$k&h=$h"),
+        )
+        assertEquals(
+            "the invite names `token` twice",
+            refused("https://example.org/?room=R&token=T&token=U#k=$k&h=$h"),
+        )
+    }
+
+    /**
+     * The control: the same page link with one of each still reads, and an unknown parameter is
+     * carried rather than dropped or refused (§5.1 ignores it).
+     */
+    @Test
+    fun `reads a page link that carries an unknown parameter`() {
+        val invite =
+            assertIs<Invite.Read.Ok>(
+                Invite.parse("https://example.org/p/?room=R1&token=T1&server=legacy#k=$k&h=$h"),
+            ).invite
+        assertEquals("wss://example.org/p/session?room=R1&token=T1&server=legacy", invite.socketUrl)
+        assertEquals("R1", invite.room)
+        assertEquals("T1", invite.token)
+    }
+
     @Test
     fun `refuses by name`() {
         assertEquals(Invite.MISSING_FRAGMENT, refused("ws://h/session?room=R&token=T"))
