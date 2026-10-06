@@ -6,7 +6,7 @@ import java.util.Locale
  * The grant's shape, ported from `vscode_client/src/bridge/grant.ts` and `listing-walk.ts`: which
  * paths a host may publish or serve, the folder's ignore files, and the walk that builds a listing.
  * The lists are the VS Code client's, so a session shares the same names from either editor;
- * `GrantParityTest` reads them out of the TypeScript source and fails on a difference.
+ * `BridgeParityTest` reads them out of the TypeScript source and fails on a difference.
  */
 object Grant {
     const val MAX_GRANT_PATHS = 100_000

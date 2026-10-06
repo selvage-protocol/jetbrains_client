@@ -6,7 +6,6 @@ package dev.dontblameme.selvage.intellij.bridge
  * with `${}` for its holes and requires it among the sentences `vscode_client/test/vocabulary.test.ts`
  * pins, except the few this editor says in its own words, which it pins by name.
  */
-@Suppress("TooManyFunctions")
 object Say {
     const val WRAP = "Selvage: "
 
