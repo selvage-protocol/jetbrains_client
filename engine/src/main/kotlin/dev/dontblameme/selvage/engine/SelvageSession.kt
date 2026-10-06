@@ -957,7 +957,7 @@ class SelvageSession private constructor(
                 Wire.CLOSE_ROOM_UNKNOWN -> "room_unknown"
                 Wire.CLOSE_TOKEN_INVALID -> "token_invalid"
                 Wire.CLOSE_ROOM_GONE -> "room_gone"
-                Wire.CLOSE_HOST_PRESENT -> "host_present"
+                Wire.CLOSE_TRY_AGAIN_LATER -> Wire.TRY_AGAIN_LATER
                 else -> "closed"
             }
     }

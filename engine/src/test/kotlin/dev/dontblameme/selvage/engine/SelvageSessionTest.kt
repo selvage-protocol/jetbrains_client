@@ -79,6 +79,27 @@ class SelvageSessionTest {
 
     private fun advance(ms: Long) = scheduler.advance(ms) { relay.settle() }
 
+    /**
+     * Steps the session clock until [condition] holds, and fails saying what it observed when it
+     * does not: no fixed wait is a test of an effect that arrives on another thread.
+     */
+    private fun awaitEvent(
+        what: String,
+        describe: () -> String,
+        virtualMs: Long = 30_000,
+        condition: () -> Boolean,
+    ) {
+        var moved = 0L
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!condition()) {
+            if (moved >= virtualMs || System.nanoTime() > deadline) {
+                fail("$what did not happen: ${describe()} after ${moved}ms of session clock")
+            }
+            advance(100)
+            moved += 100
+        }
+    }
+
     @Test
     fun `a guest joins, is served what it opens, and both sides converge`() {
         val host = host()
@@ -242,6 +263,47 @@ class SelvageSessionTest {
         assertEquals(2, seen.all<SessionEvent.Seated>().size)
         assertEquals(listOf(guest.seat), host.peers().map { it.peerId })
         assertEquals(Role.GUEST, guest.ownRole())
+    }
+
+    @Test
+    fun `a close outside the close vocabulary during a reconnect schedules another attempt`() {
+        // §11: 4000–4003 are the whole close vocabulary, and a client MUST NOT read a meaning into
+        // a close outside it. 4004 is the `host_present` code this client used to read, 4005 is a
+        // private-use code the reference server never sent, and 1013 is IANA's capacity fault.
+        for (code in listOf(Wire.CLOSE_TRY_AGAIN_LATER, 4004, 4005)) {
+            val host = host()
+            val seen = Recorded()
+            val guest = join(host, seen)
+            relay.connection(guest.seat!!).drop()
+            relay.settle()
+            relay.closeHello = code
+            relay.closeHelloReason = "a reason no protocol names"
+
+            fun observed() =
+                "ending=${guest.ending} reconnecting=${seen.all<SessionEvent.Reconnecting>().map { it.attempt }} " +
+                    "failed=${seen.all<SessionEvent.Failed>()} ended=${seen.all<SessionEvent.Ended>()}"
+            awaitEvent("a second attempt after a $code close", ::observed) {
+                seen.all<SessionEvent.Reconnecting>().map { it.attempt } == listOf(1, 2)
+            }
+            awaitEvent("the seat a $code close was followed by", ::observed) {
+                seen.all<SessionEvent.Seated>().size == 2
+            }
+            assertEquals(emptyList(), seen.all<SessionEvent.Failed>(), "what a $code close said")
+            assertEquals(emptyList(), seen.all<SessionEvent.Ended>(), "how a $code close ended the session")
+            assertNull(guest.ending, "the ending a $code close left")
+        }
+    }
+
+    @Test
+    fun `a capacity close at join is a refusal a retry can change`() {
+        val host = host()
+        relay.closeHello = Wire.CLOSE_TRY_AGAIN_LATER
+        relay.closeHelloReason = "capacity reached"
+        val refused =
+            assertFailsWith<SessionException> { SelvageSession.join(host.invite!!, options("Bob", Recorded())) }
+        assertEquals(Wire.TRY_AGAIN_LATER, refused.code)
+        assertTrue(refused.message!!.contains("1013 capacity reached"), refused.message)
+        assertTrue(!Wire.isTerminal(refused.code), "a full server is transient")
     }
 
     @Test

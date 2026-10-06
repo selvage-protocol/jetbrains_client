@@ -24,10 +24,19 @@ object Wire {
     const val CLOSE_ROOM_UNKNOWN = 4001
     const val CLOSE_TOKEN_INVALID = 4002
     const val CLOSE_ROOM_GONE = 4003
-    const val CLOSE_HOST_PRESENT = 4004
+
+    /**
+     * §11's capacity close, IANA's `try again later`: the reference server's connection cap and
+     * its inbound budget (§2.1, §12). It is outside the private-use range, so it carries no
+     * session meaning and a client MUST NOT read one into it — but it is not a refusal either.
+     */
+    const val CLOSE_TRY_AGAIN_LATER = 1013
+
+    /** What [CLOSE_TRY_AGAIN_LATER] is reported as, so an adapter can name the outcome it tells apart. */
+    const val TRY_AGAIN_LATER = "try_again_later"
 
     /** Refusals a retry of the same URL cannot change (§9.1, §11). */
-    val TERMINAL_CODES: Set<String> = setOf("room_unknown", "token_invalid", "host_present", "room_gone")
+    val TERMINAL_CODES: Set<String> = setOf("room_unknown", "token_invalid", "room_gone")
 
     /** §5's bound on a display name, in UTF-16 code units. */
     const val MAX_DISPLAY_NAME_UNITS = 32
