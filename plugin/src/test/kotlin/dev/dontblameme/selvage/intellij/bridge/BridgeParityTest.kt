@@ -339,9 +339,9 @@ class BridgeParityTest : TestCase() {
         val unported =
             uncovered.filter {
                 it.startsWith("words.") || it.startsWith("seats.") || it.startsWith("names.") ||
-                    it.startsWith("initials.")
+                    it.startsWith("initials.") || it.startsWith("grant.")
             }
-        assertEquals("every export of words, seats, names and initials is pinned", emptyList<String>(), unported)
+        assertEquals("every export of words, seats, names, initials and grant is pinned", emptyList<String>(), unported)
         val mismatches = ArrayList<String>()
         for ((index, call) in calls.withIndex()) {
             val expected = lines[index + 1]
