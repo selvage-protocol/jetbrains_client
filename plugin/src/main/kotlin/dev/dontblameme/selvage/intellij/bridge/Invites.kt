@@ -1,6 +1,7 @@
 package dev.dontblameme.selvage.intellij.bridge
 
 import dev.dontblameme.selvage.engine.SessionException
+import dev.dontblameme.selvage.sealed.Invite
 import dev.dontblameme.selvage.sealed.Urls
 import dev.dontblameme.selvage.wire.Wire
 import java.net.URI
@@ -10,6 +11,8 @@ import java.net.URISyntaxException
  * Server addresses and invite links as the VS Code client reads them (`normaliseServerUrl`,
  * `serverAddressRefusal`, `inviteLinkRefusal`, `buildPageLink` and their helpers in
  * `vscode_client/src/adapter/extension.ts`), so a link copied from one client joins from the other.
+ * What a link's own query and fragment name is read by the engine (`Invite.parse`), which is the
+ * one reader the join hands a link to, rather than by a second reading here.
  */
 object Invites {
     /** The demo server a host is offered when nothing was set or remembered. */
@@ -48,31 +51,6 @@ object Invites {
         return if (hash == -1) "" else invite.substring(hash)
     }
 
-    fun fragmentKeys(fragment: String): Pair<String?, String?> {
-        val text = fragment.removePrefix("#")
-        var roomKey: String? = null
-        var hostKey: String? = null
-        for (part in text.split('&')) {
-            val at = part.indexOf('=')
-            val name = if (at == -1) part else part.substring(0, at)
-            val value = if (at == -1) "" else part.substring(at + 1)
-            if (name == "k" && roomKey == null) {
-                roomKey = value
-            } else if (name == "h" && hostKey == null) {
-                hostKey = value
-            }
-        }
-        return roomKey to hostKey
-    }
-
-    fun fragmentKeyRefusal(invite: String): String? {
-        val (roomKey, hostKey) = fragmentKeys(fragmentOf(invite))
-        if (roomKey == null && hostKey == null) return null
-        if (roomKey.isNullOrEmpty()) return "the invite carries no room key (`k`)"
-        if (hostKey.isNullOrEmpty()) return "the invite carries no host key (`h`)"
-        return null
-    }
-
     data class PageLink(
         val room: String,
         val token: String,
@@ -89,6 +67,10 @@ object Invites {
         if (uri.scheme != "http" && uri.scheme != "https") return null
         if (uri.host.isNullOrEmpty()) return null
         val query = queryPairs(uri.rawQuery ?: "")
+        // `§5.1` has each of the two appear at most once, and a page link has no server to refuse
+        // a repeat: the rewrite into a connection URL would have to choose one of the two values,
+        // so the link is left as it stands instead, and the engine refuses it by name.
+        if (query.count { it.first == "room" } > 1 || query.count { it.first == "token" } > 1) return null
         val room = query.firstOrNull { it.first == "room" }?.second
         val token = query.firstOrNull { it.first == "token" }?.second
         if (room.isNullOrEmpty() || token.isNullOrEmpty()) return null
@@ -161,8 +143,16 @@ object Invites {
     /** Why the join box refuses [value], or null when it is an invite this client can dial. */
     fun inviteLinkRefusal(value: String): String? {
         val invite = value.jsTrim()
-        fragmentKeyRefusal(invite)?.let { return it }
-        if (parsePageLink(invite.substringBefore('#')) != null) return null
+        // `§5.1`'s two forms are the engine's to read — the same reader the join hands the link to
+        // — so a repeat of `room`, `token`, `k` or `h` is named here, before the box accepts a link
+        // that a rewrite would have had to choose a value for.
+        val read = Invite.parse(invite)
+        if (read is Invite.Read.Refused) {
+            // A paste that names no endpoint of this protocol is answered in the box's own words
+            // instead: what the engine says about an address tells someone who pasted the wrong
+            // thing nothing, and a newcomer cannot tell a bad paste from a server that is down.
+            return if (namesAnInvite(invite)) read.reason else INVITE_LINK_HINT
+        }
         val wire = wireInviteFor(invite)
         if (!isSessionBase(wire)) return INVITE_LINK_HINT
         val parsed = parseSessionUrl(wire)
@@ -176,6 +166,27 @@ object Invites {
             }
         if (pasted.rawPath != dialled.rawPath || pasted.rawQuery != dialled.rawQuery) return INVITE_LINK_HINT
         return null
+    }
+
+    /**
+     * Whether [invite] names this protocol's session endpoint at all, in either of `§5.1`'s two
+     * forms: the connection URL's `…/session`, or a page link — the scheme a browser speaks, with
+     * a query naming a room and a token. Neither of the two values is read, so nothing here can
+     * choose between the two of a repeat.
+     */
+    private fun namesAnInvite(invite: String): Boolean {
+        val address = invite.substringBefore('#')
+        if (address.substringBefore('?').endsWith(Urls.ENDPOINT_PATH)) return true
+        val uri =
+            try {
+                URI(address)
+            } catch (e: URISyntaxException) {
+                return false
+            }
+        if (uri.scheme != "http" && uri.scheme != "https") return false
+        if (uri.host.isNullOrEmpty()) return false
+        val named = queryPairs(uri.rawQuery ?: "").map { it.first }
+        return "room" in named && "token" in named
     }
 
     /** The guest link for a room: the page its server serves, with the room, the token and the fragment. */

@@ -11,6 +11,7 @@ import dev.dontblameme.selvage.intellij.bridge.Say
 import dev.dontblameme.selvage.intellij.settings.SelvageSettings
 import dev.dontblameme.selvage.intellij.ui.Notifier
 import dev.dontblameme.selvage.intellij.ui.Prompts
+import dev.dontblameme.selvage.sealed.KeyCodec
 
 /**
  * The twelve commands: registered under the canonical titles, grouped under Tools → Selvage (which
@@ -116,9 +117,30 @@ class CommandsTest : BasePlatformTestCase() {
                 Say.wrap(dev.dontblameme.selvage.intellij.bridge.Invites.INVITE_LINK_HINT),
                 said.last().sentence,
             )
+            // The link's fragment is read by the engine, so the sentence for a `k` that is not a
+            // key is its own, rather than a second reader's guess about the `h` that is not there
+            // either.
             prompts.inputs.add("https://example.com/?room=r&token=t#k=abc")
             ActionManager.getInstance().getAction("Selvage.Join").actionPerformed(event("Selvage.Join"))
-            assertEquals("Selvage: the invite carries no host key (`h`)", said.last().sentence)
+            assertEquals(
+                "Selvage: `k` is not a 32-byte key in the fragment's encoding",
+                said.last().sentence,
+            )
+        }
+    }
+
+    /**
+     * §5.1: a page link that repeats a join key is refused locally, by the box, and by name — no
+     * name question, no socket, and no choice between the two values the rewrite was handed.
+     */
+    fun testAJoinWithARepeatedJoinKeyIsRefusedByTheBox() {
+        Said().use { said ->
+            val k = KeyCodec.encode(ByteArray(32) { it.toByte() })
+            val h = KeyCodec.encode(ByteArray(32) { (255 - it).toByte() })
+            prompts.inputs.add("https://example.com/?room=r-1&room=r-2&token=t#k=$k&h=$h")
+            ActionManager.getInstance().getAction("Selvage.Join").actionPerformed(event("Selvage.Join"))
+            assertEquals(Say.wrap("the invite names `room` twice"), said.last().sentence)
+            assertEquals(listOf("input: ${Say.JOIN_TITLE}"), prompts.asked)
         }
     }
 
