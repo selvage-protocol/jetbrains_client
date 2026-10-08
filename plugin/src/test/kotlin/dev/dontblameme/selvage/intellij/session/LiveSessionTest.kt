@@ -46,6 +46,16 @@ import java.util.concurrent.locks.LockSupport
 class LiveSessionTest : HeavyPlatformTestCase() {
     private val renew = 300L
     private val expire = 1_500L
+
+    /**
+     * What a wait whose predicate a peer's frame has to satisfy is given: the peer's engine →
+     * `selvaged` → this window's engine, and back. That is milliseconds on an idle machine, and
+     * the room's own clock is what a contended runner stretches: §8.2 renews awareness every 15 s
+     * in a real session and §13.1's step 4 re-announces a key on the same window, so a frame only
+     * a renewal republishes lands inside this wait and outside a shorter one. A predicate local to
+     * this window keeps [eventually]'s default.
+     */
+    private val roundTripMs = 30_000L
     private var tolerated: com.intellij.openapi.application.AccessToken? = null
     private lateinit var server: Process
     private lateinit var base: String
@@ -150,9 +160,9 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         service.host(project)
         val session = service.current ?: throw AssertionError("no session after hosting; said: ${said.sentences()}")
         val guest = SelvageSession.join(session.invite()!!, options("Bob")).also { engines.add(it) }
-        eventually("the guest is committed") { guest.ownRole() == Role.GUEST }
-        eventually("the guest has the listing") { guest.listing() == listOf("README.md") }
-        eventually("the host has attributed the guest") { session.participants().size == 1 }
+        eventually("the guest is committed", timeoutMs = roundTripMs) { guest.ownRole() == Role.GUEST }
+        eventually("the guest has the listing", timeoutMs = roundTripMs) { guest.listing() == listOf("README.md") }
+        eventually("the host has attributed the guest", timeoutMs = roundTripMs) { session.participants().size == 1 }
         return session to guest
     }
 
@@ -166,13 +176,22 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         val (session, guest) = hostWithOneFile()
         guest.open("README.md")
         // The host serves a path a guest holds even though no editor of this window holds it.
-        eventually("the host's replica holds the text the guest's hold was served") {
+        eventually("the host's replica holds the text the guest's hold was served", timeoutMs = roundTripMs) {
             session.engine.text("README.md") == "hello\n"
+        }
+        // The host's replica holds the text before the guest's does, by exactly the hop that
+        // carries the content to it, and a selection is anchored to positions in the sender's own
+        // replica: set in a replica that does not hold the document yet, it is published as the
+        // path with no selection at all (§8.1), which §8.2's renewal republishes as it stands. The
+        // wait below could then never pass, however long it were given, so the cursor is set in a
+        // replica that holds the text.
+        eventually("the guest's replica holds the text", timeoutMs = roundTripMs) {
+            guest.text("README.md") == "hello\n"
         }
         assertFalse("the file is not bound in this window yet", session.sync.isBound("README.md"))
 
         guest.setCursor("README.md", Selection(1, 4))
-        eventually("the guest's selection resolves in the host's engine") {
+        eventually("the guest's selection resolves in the host's engine", timeoutMs = roundTripMs) {
             session.engine.cursors().any {
                 it.clientId == guest.awarenessClientId() && it.selection == Selection(1, 4)
             }
@@ -206,9 +225,9 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         }
 
         guest.open("README.md")
-        eventually("the guest holds the text") { guest.text("README.md") == "hello\n" }
+        eventually("the guest holds the text", timeoutMs = roundTripMs) { guest.text("README.md") == "hello\n" }
         guest.setCursor("README.md", Selection(1, 4))
-        eventually("the first presence draws the selection") {
+        eventually("the first presence draws the selection", timeoutMs = roundTripMs) {
             session.presence.lastDrawn["README.md"]?.any { it.anchor == 1 && it.head == 4 } == true
         }
     }
@@ -220,14 +239,14 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         eventually("the open document is bound") { session.sync.isBound("README.md") }
 
         guest.open("README.md")
-        eventually("the guest holds the text") { guest.text("README.md") == "hello\n" }
+        eventually("the guest holds the text", timeoutMs = roundTripMs) { guest.text("README.md") == "hello\n" }
         guest.setCursor("README.md", Selection(1, 4))
-        eventually("the first presence draws the selection") {
+        eventually("the first presence draws the selection", timeoutMs = roundTripMs) {
             session.presence.lastDrawn["README.md"]?.any { it.anchor == 1 && it.head == 4 } == true
         }
         // A linewise range over one line is the shape the report pressed `shift+v` for.
         guest.setCursor("README.md", Selection(0, 5))
-        eventually("a later move is still drawn") {
+        eventually("a later move is still drawn", timeoutMs = roundTripMs) {
             session.presence.lastDrawn["README.md"]?.any { it.anchor == 0 && it.head == 5 } == true
         }
     }
