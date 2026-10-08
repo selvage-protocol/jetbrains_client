@@ -143,6 +143,16 @@ class PeerSession(
     private var localState: YAny.Obj? = null
     private var awarenessRenewedAt: Long? = null
 
+    /**
+     * Whether a local awareness change was made while §13.1's step 4 held this connection back.
+     *
+     * The state is in [localState] and in the awareness set; what the gate holds is the frame,
+     * which [flushHeldBackAwareness] publishes once a state commits this key. Left to §8.2's
+     * renewal clock alone the room shows this connection's previous presence for a whole window,
+     * so a client that has just joined or been re-seated is invisible, caret and selection alike.
+     */
+    private var awarenessHeld = false
+
     private val outbound = ArrayList<ByteArray>()
     private var detached = false
     private val held = sortedSetOf<String>()
@@ -320,6 +330,7 @@ class PeerSession(
         if (commitsOurs()) {
             if (handshakenAt == null) syncStep1(clock)
             flushHeldBackEdits()
+            flushHeldBackAwareness()
             announceHolds(clock)
         } else {
             announce(clock)
@@ -480,6 +491,10 @@ class PeerSession(
         this.roster = LinkedHashSet(roster)
         awareness.rotate(awarenessClientId)
         awarenessRenewedAt = null
+        // The held frame belonged to the connection that went; the re-seat republishes
+        // `localState` on its own clock, under the fresh id, and never under the dead key (§9.1,
+        // §8.4). The tick that follows a re-seat is what holds it again while the gate is shut.
+        awarenessHeld = false
         counter = 0
         announcedAt = null
         handshakenAt = null
@@ -645,12 +660,23 @@ class PeerSession(
         made.onUpdate { change, origin ->
             if (origin != Awareness.LOCAL) return@onUpdate
             val clients = change.added + change.updated + change.removed
-            if (clients.isEmpty() || !mayPublish()) return@onUpdate
-            publish(Publication.CONTENT, Sync.encode(SyncMessage.Awareness(made.encodeUpdate(clients))))
-            awarenessRenewedAt = clockOfLastMove
+            if (clients.isEmpty()) return@onUpdate
+            if (!mayPublish()) {
+                // §13.1's step 4 holds the frame, not the state: `localState` keeps it, and the
+                // state that commits this key publishes it without a renewal window's wait.
+                awarenessHeld = true
+                return@onUpdate
+            }
+            publishAwareness(clients)
         }
         made.onChange { _, origin -> if (origin != Awareness.LOCAL) presenceMoved = true }
         return made
+    }
+
+    /** One awareness frame for [clients], with §8.2's renewal clock re-based on it. */
+    private fun publishAwareness(clients: Collection<Long>) {
+        publish(Publication.CONTENT, Sync.encode(SyncMessage.Awareness(awareness.encodeUpdate(clients))))
+        awarenessRenewedAt = clockOfLastMove
     }
 
     private fun flushHeldBackEdits() {
@@ -659,6 +685,27 @@ class PeerSession(
         unsent.clear()
         if (ownRole() == Role.VIEWER) return
         publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(merged)))
+    }
+
+    /**
+     * Publishes the local awareness state a change made before a state committed this key.
+     *
+     * §13.1's step 4 held the frame; the state is in [localState], and leaving the frame to
+     * §8.2's renewal clock is a whole window in which the room still shows this connection's
+     * previous presence. What goes out is [localState], so the latest change is the one published,
+     * and a cleared state stays cleared: an empty state would put a live presence with a cursor at
+     * nowhere back on the wire.
+     */
+    private fun flushHeldBackAwareness() {
+        if (!awarenessHeld) return
+        if (localState == null) {
+            // A clearing owes nothing; the next change that does set a state is held on its own.
+            awarenessHeld = false
+            return
+        }
+        if (!mayPublish()) return
+        awarenessHeld = false
+        publishAwareness(listOf(awareness.clientID))
     }
 
     private fun commitsOurs(): Boolean = reader.entries.any { it.key.contentEquals(session.public) }

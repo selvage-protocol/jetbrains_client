@@ -1,6 +1,7 @@
 package dev.dontblameme.selvage.peer
 
 import dev.dontblameme.selvage.crdt.Doc
+import dev.dontblameme.selvage.crdt.Json
 import dev.dontblameme.selvage.crdt.Lib0Decoder
 import dev.dontblameme.selvage.crdt.Lib0Encoder
 import dev.dontblameme.selvage.crdt.Sync
@@ -12,13 +13,19 @@ import dev.dontblameme.selvage.sealed.Envelope
 import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Frames
 import dev.dontblameme.selvage.sealed.Payload
+import dev.dontblameme.selvage.sealed.PeerEntry
 import dev.dontblameme.selvage.sealed.Role
+import dev.dontblameme.selvage.sealed.RoomState
 import dev.dontblameme.selvage.sealed.SessionKey
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+/** The awareness id of a session a case drives on its own, and the id a re-seat rotates it to. */
+private const val AWARENESS = 3003L
+private const val ROTATED = 4004L
 
 /** Two or more sessions over an in-memory relay, driven by one explicit clock. */
 private class Room(
@@ -110,6 +117,79 @@ private fun Room.awarenessEntries(frames: List<ByteArray>): List<Pair<Long, Long
 private fun PeerSession.hasOutbound(): Boolean {
     val frames = takeOutbound()
     return frames.isNotEmpty().also { if (it) error("frames left unrelayed") }
+}
+
+/**
+ * A session of its own over the room's keys, with no host: driven by the frames a test builds
+ * rather than by a host's producer, so the clock and the state that commits a key are the test's.
+ */
+private fun Room.alone(
+    seat: String,
+    awarenessClientId: Long,
+): PeerSession =
+    PeerSession(
+        PeerOptions(roomId, roomKey, hostKey.public, keepalive, seat, awarenessClientId = awarenessClientId),
+    )
+
+/** A `kind = 1` state the host sealed, committing one guest key per [peers] entry. */
+private fun Room.stateFrame(
+    issued: Long,
+    counter: Long,
+    vararg peers: Pair<SessionKey, String>,
+): ByteArray =
+    Frames.seal(
+        roomId,
+        Frames.frameKey(roomId, roomKey),
+        1,
+        counter,
+        hostKey,
+        RoomState(
+            issued,
+            listOf("README.md"),
+            peers.associate { (key, seat) -> key.spelling to PeerEntry(seat, Role.GUEST) },
+        ).encode(),
+    )
+
+/** The update that puts "hello" in README.md, from a replica of its own. */
+private fun helloUpdate(): ByteArray =
+    Updates.encodeStateAsUpdate(Doc(7).also { it.getText("README.md").insert(0, "hello") })
+
+/** A `kind = 0` frame carrying [update] under [key]. */
+private fun Room.contentFrame(
+    key: SessionKey,
+    counter: Long,
+    update: ByteArray,
+): ByteArray =
+    Frames.seal(roomId, Frames.frameKey(roomId, roomKey), 0, counter, key, Sync.encode(SyncMessage.Update(update)))
+
+/** The awareness state each client id carries in [frames], the last frame for an id winning. */
+private fun Room.awarenessStates(frames: List<ByteArray>): Map<Long, String> {
+    val frameKey = Frames.frameKey(roomId, roomKey)
+    val states = LinkedHashMap<Long, String>()
+    for (frame in frames) {
+        val envelope = Envelope.parse(frame) ?: error("a frame the room cannot parse")
+        if (envelope.kind != 0L) continue
+        val plaintext = Frames.opens(roomId, frameKey, envelope) ?: error("a frame the room cannot open")
+        for (message in Sync.decode(plaintext).filterIsInstance<SyncMessage.Awareness>()) {
+            val decoder = Lib0Decoder(message.update)
+            repeat(decoder.readVarUint().toInt()) {
+                val client = decoder.readVarUint()
+                decoder.readVarUint()
+                states[client] = decoder.readVarString()
+            }
+        }
+    }
+    return states
+}
+
+/** The selection [json] names for [clientId] in a replica holding the room's own text. */
+private fun selectionIn(
+    json: String,
+    clientId: Long,
+): Selection? {
+    val doc = Doc()
+    Updates.applyUpdate(doc, helloUpdate(), "the room's text")
+    return AwarenessState.resolve(clientId, Json.parse(json), doc).selection
 }
 
 class PeerSessionTest {
@@ -447,6 +527,172 @@ class PeerSessionTest {
                 .cursors()
                 .single { it.clientId == after }
                 .selection,
+        )
+    }
+
+    @Test
+    fun `an awareness change held back before a committing state is published by it`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+
+        // A state that commits another key, and that peer's text, so the gate is shut while this
+        // connection has something to select.
+        assertEquals(Outcome.Applied(1), guest.deliver(1, room.stateFrame(1, 1, other to "p-other")))
+        assertEquals(Outcome.Applied(0), guest.deliver(2, room.contentFrame(other, 1, helloUpdate())))
+        // The clock the local change is stamped with, which the renewal below is measured from.
+        guest.tick(3)
+        guest.takeOutbound()
+
+        guest.setCursor("README.md", Selection(1, 4))
+        assertTrue(
+            room.awarenessStates(guest.takeOutbound()).isEmpty(),
+            "§13.1's step 4 holds the frame back",
+        )
+
+        // The state that commits this key carries the held change out with it: the caller changes
+        // nothing else, and §8.2's renewal has not come round.
+        assertEquals(Outcome.Applied(1), guest.deliver(4, room.stateFrame(2, 2, guest.sessionKey to "p-guest")))
+        val out = guest.takeOutbound()
+        assertEquals(listOf(AWARENESS to 2L), room.awarenessEntries(out), "one frame, for the local id")
+        val state = room.awarenessStates(out).getValue(AWARENESS)
+        assertEquals(Selection(1, 4), selectionIn(state, AWARENESS), "the state the caller set")
+
+        // Neither renewal is due yet — the session's, measured from the flush, nor the awareness
+        // set's, measured from the change — so a frame here would be the flush publishing twice.
+        guest.tick(3 + room.keepalive.awarenessRenewMs - 1)
+        assertTrue(
+            room.awarenessEntries(guest.takeOutbound()).isEmpty(),
+            "the flush published the held state twice",
+        )
+    }
+
+    @Test
+    fun `an awareness change made while the gate is open goes out at once, and only once`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+        assertEquals(
+            Outcome.Applied(1),
+            guest.deliver(1, room.stateFrame(1, 1, guest.sessionKey to "p-guest", other to "p-other")),
+        )
+        assertEquals(Outcome.Applied(0), guest.deliver(2, room.contentFrame(other, 1, helloUpdate())))
+        guest.takeOutbound()
+
+        guest.setCursor("README.md", Selection(0, 2))
+        val out = guest.takeOutbound()
+        assertEquals(listOf(AWARENESS to 2L), room.awarenessEntries(out), "one frame, at once")
+        assertEquals(Selection(0, 2), selectionIn(room.awarenessStates(out).getValue(AWARENESS), AWARENESS))
+
+        // Every later state that commits this key runs the flush; nothing was held for it, so it
+        // publishes nothing.
+        assertEquals(Outcome.Applied(1), guest.deliver(3, room.stateFrame(2, 2, guest.sessionKey to "p-guest")))
+        assertTrue(
+            room.awarenessEntries(guest.takeOutbound()).isEmpty(),
+            "the flush republished a state it never held",
+        )
+    }
+
+    @Test
+    fun `a state cleared inside the gate is never published, by the flush or the renewal`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+        assertEquals(Outcome.Applied(1), guest.deliver(1, room.stateFrame(1, 1, other to "p-other")))
+        guest.takeOutbound()
+
+        guest.setCursor("README.md", Selection(0, 2))
+        guest.setCursor(null)
+        assertTrue(
+            room.awarenessStates(guest.takeOutbound()).isEmpty(),
+            "the clearing is held like the change before it",
+        )
+
+        assertEquals(Outcome.Applied(1), guest.deliver(2, room.stateFrame(2, 2, guest.sessionKey to "p-guest")))
+        assertTrue(
+            room.awarenessStates(guest.takeOutbound()).isEmpty(),
+            "the flush published something for a cleared state",
+        )
+
+        guest.tick(2 + room.keepalive.awarenessRenewMs)
+        assertTrue(
+            room.awarenessStates(guest.takeOutbound()).isEmpty(),
+            "§8.2's renewal resurrected a cleared state",
+        )
+    }
+
+    @Test
+    fun `a change set, cleared and set again inside the gate publishes only the last one`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+        assertEquals(Outcome.Applied(1), guest.deliver(1, room.stateFrame(1, 1, other to "p-other")))
+        guest.takeOutbound()
+
+        guest.setCursor("README.md")
+        guest.setCursor(null)
+        guest.setCursor("theirs.md")
+        assertTrue(room.awarenessStates(guest.takeOutbound()).isEmpty(), "both changes are held inside the gate")
+
+        assertEquals(Outcome.Applied(1), guest.deliver(2, room.stateFrame(2, 2, guest.sessionKey to "p-guest")))
+        assertEquals(
+            mapOf(AWARENESS to "{\"path\":\"theirs.md\"}"),
+            room.awarenessStates(guest.takeOutbound()),
+            "the state the caller last set, and no resurrection of the cleared one",
+        )
+    }
+
+    @Test
+    fun `a detached connection publishes no held awareness`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+        assertEquals(Outcome.Applied(1), guest.deliver(1, room.stateFrame(1, 1, other to "p-other")))
+        guest.takeOutbound()
+
+        guest.setCursor("README.md")
+        guest.detach()
+        assertEquals(Outcome.Applied(1), guest.deliver(2, room.stateFrame(2, 2, guest.sessionKey to "p-guest")))
+        assertTrue(
+            room.awarenessStates(guest.takeOutbound()).isEmpty(),
+            "a detached session published the state its dead key was holding",
+        )
+    }
+
+    @Test
+    fun `a re-seat publishes the held awareness under the fresh id, never the old one`() {
+        val room = Room()
+        val guest = room.alone("p-guest", AWARENESS)
+        val other = SessionKey.mint()
+        val seen = ArrayList<ByteArray>()
+        guest.tick(0)
+        seen += guest.takeOutbound()
+        assertEquals(Outcome.Applied(1), guest.deliver(1, room.stateFrame(1, 1, other to "p-other")))
+        seen += guest.takeOutbound()
+
+        guest.setCursor("README.md")
+        guest.detach()
+        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), ROTATED)
+        // The pump that follows a re-seat: the renewal republishes `localState` under the fresh id,
+        // and the gate, still shut, holds it again rather than dropping it.
+        guest.tick(2)
+        assertEquals(Outcome.Applied(1), guest.deliver(3, room.stateFrame(2, 2, guest.sessionKey to "p-guest-2")))
+        seen += guest.takeOutbound()
+
+        assertEquals(
+            mapOf(ROTATED to "{\"path\":\"README.md\"}"),
+            room.awarenessStates(seen),
+            "the held state, under the fresh id",
         )
     }
 }
