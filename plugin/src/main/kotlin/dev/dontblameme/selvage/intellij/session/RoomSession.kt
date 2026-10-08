@@ -430,6 +430,14 @@ class RoomSession(
                     if (edit.path in waitingForText) arrive(edit.path) else sync.remoteEdit(edit.path, edit.delta)
                     fetches.remove(edit.path)?.invoke()
                 }
+                // The room's text for a document this window already shows arrives here, after the
+                // document was bound: a caret published in between is one the sender could not
+                // anchor, which §8.1 carries as `path` with no selection, and §8.2's renewal
+                // republishes those same anchors, so nothing re-derives it. The text's arrival is
+                // the moment to publish it again, as the Neovim client does (`nvim_client/lua/
+                // selvage/init.lua`, `document:apply` → `schedule_selection`) and the VS Code
+                // adapter on a visible-editor change.
+                schedulePresence()
             }
 
             is SessionEvent.Presence -> {}
@@ -806,7 +814,7 @@ class RoomSession(
             fetchedOnly.remove(path)
             if (!FileEditorManager.getInstance(project).isFileOpen(file)) sync.unbind(path)
         }
-        sync.bind(path, document, seed = false)
+        bindAndDraw(path, document, seed = false)
         if (engine.has(path)) {
             finish()
             done(true)

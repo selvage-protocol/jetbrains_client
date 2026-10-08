@@ -24,6 +24,12 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.3.1</p>
+    <ul>
+      <li>A peer's selection is drawn as soon as their document is open in this window, instead of at their next move.</li>
+      <li>A caret or selection made while the room is confirming your connection reaches the others as soon as it does, instead of a renewal window later.</li>
+      <li>A caret or selection made before a document's text has arrived reaches the others when it arrives, instead of at your next move.</li>
+    </ul>
     <p>0.3.0</p>
     <ul>
       <li>An invite that names a room, a token or a key more than once is refused by name instead of silently joining the first one it names.</li>
