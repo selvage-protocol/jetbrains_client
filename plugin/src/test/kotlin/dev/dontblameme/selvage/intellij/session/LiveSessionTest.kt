@@ -122,6 +122,17 @@ class LiveSessionTest : HeavyPlatformTestCase() {
             Prompts.current = Prompts.Ide
             server.destroy()
             if (!server.waitFor(5, TimeUnit.SECONDS)) server.destroyForcibly().waitFor(5, TimeUnit.SECONDS)
+            // A saved document is written by the VFS on a thread of its own, and the scratch those
+            // writes land in is deleted next: let them finish first, or one lands after the delete
+            // and is logged against whichever test is running when it reports.
+            val vfs =
+                LocalFileSystem.getInstance() as? com.intellij.openapi.vfs.newvfs.AsyncableFileSystem
+                    ?: throw AssertionError("the local file system is not async")
+            try {
+                vfs.fsync()
+            } catch (e: java.io.IOException) {
+                // A write the test already reported; the scratch still goes.
+            }
             scratch.toFile().deleteRecursively()
         } finally {
             try {
@@ -164,6 +175,29 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         eventually("the guest has the listing", timeoutMs = roundTripMs) { guest.listing() == listOf("README.md") }
         eventually("the host has attributed the guest", timeoutMs = roundTripMs) { session.participants().size == 1 }
         return session to guest
+    }
+
+    /**
+     * The mirror of [hostWithOneFile]: a peer engine hosts a room with one file, and this IDE joins
+     * it as a guest. [transport] is what the window's session dials with, when a case has to hold the
+     * room's frames back; [read] is what the host serves for the file.
+     */
+    private fun guestWithOneFile(
+        transport: Transport? = null,
+        read: (String) -> String? = { "hello\n" },
+    ): Pair<SelvageSession, RoomSession> {
+        val service = SelvageService.get()
+        if (transport != null) service.sessionOptions = { options(it, transport) }
+        val host =
+            SelvageSession
+                .host(base, HostContent({ listOf("README.md") }, read), options("Grace"))
+                .also { engines.add(it) }
+        service.join(project, host.invite!!)
+        val session = service.current ?: throw AssertionError("no session after joining; said: ${said.sentences()}")
+        eventually("the guest is committed", timeoutMs = roundTripMs) { session.engine.ownRole() == Role.GUEST }
+        eventually("the room's listing is in", timeoutMs = roundTripMs) { session.listed() == listOf("README.md") }
+        eventually("the mirror holds the file") { Files.isRegularFile(session.mirror!!.root.resolve("README.md")) }
+        return host to session
     }
 
     /**
@@ -248,6 +282,45 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         guest.setCursor("README.md", Selection(0, 5))
         eventually("a later move is still drawn", timeoutMs = roundTripMs) {
             session.presence.lastDrawn["README.md"]?.any { it.anchor == 0 && it.head == 5 } == true
+        }
+    }
+
+    /**
+     * The other side of the same gap, in the role only a guest reaches: the room's text for a document
+     * this window shows arrives as a later message, and a caret published before it is one the sender
+     * cannot anchor. §8.1 carries the path with no selection, and §8.2's renewal republishes those
+     * same anchors, so the text's arrival is the one moment left to publish it again. The peer host
+     * must hold the caret as soon as the text lands, with no further move in this window.
+     */
+    fun testACaretInARoomDocumentReachesTheHostWhenTheRoomsTextArrives() {
+        val held = HeldFrames()
+        val (host, session) = guestWithOneFile(held)
+        val guest = session.engine
+        // From here the window's replica does not get the room's frames, so the text for a document it
+        // opens cannot arrive until this is let go.
+        held.hold()
+
+        // A user opens the room's document. Its mirror copy is empty, so the window binds it at once
+        // and holds the path; the room's text is a later frame.
+        val editor = session.openRoomPath("README.md") ?: throw AssertionError("the room's document did not open")
+        eventually("the document is bound") { session.sync.isBound("README.md") }
+        assertFalse("the replica holds no text for it yet", guest.has("README.md"))
+
+        // The caret is where the user leaves it, published while the replica cannot anchor it.
+        editor.caretModel.moveToOffset(0)
+        eventually("the host holds the path with no selection", timeoutMs = roundTripMs) {
+            host.cursors().any {
+                it.clientId == guest.awarenessClientId() && it.path == "README.md" && it.selection == null
+            }
+        }
+
+        // The room's text arrives.
+        held.release()
+
+        eventually("the host holds the caret when the text arrives", timeoutMs = roundTripMs) {
+            host.cursors().any {
+                it.clientId == guest.awarenessClientId() && it.path == "README.md" && it.selection == Selection(0, 0)
+            }
         }
     }
 
@@ -643,6 +716,61 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         assertTrue("no list is left listening", session.pickers.isEmpty())
         prompts.confirms.add(true)
         service.leave(project)
+    }
+
+    /**
+     * A transport that holds every binary frame the server sends this window while [hold] is set, and
+     * delivers them in order when [release] is called. The room's text arrives as one of those frames,
+     * so a window dialling through this has not got the text while it still holds the path.
+     */
+    private class HeldFrames(
+        private val inner: Transport = JdkTransport(),
+    ) : Transport {
+        private val lock = Any()
+        private var holding = false
+        private val held = ArrayList<ByteArray>()
+        private var listener: SocketListener? = null
+
+        fun hold() = synchronized(lock) { holding = true }
+
+        fun release() {
+            val pending: List<ByteArray>
+            synchronized(lock) {
+                holding = false
+                pending = ArrayList(held)
+                held.clear()
+            }
+            val to = listener ?: return
+            pending.forEach(to::onBinary)
+        }
+
+        override fun open(
+            url: String,
+            timeout: Duration,
+            listener: SocketListener,
+        ): CompletableFuture<WireSocket> {
+            this.listener = listener
+            val relay =
+                object : SocketListener {
+                    override fun onText(text: String) = listener.onText(text)
+
+                    override fun onBinary(bytes: ByteArray) {
+                        synchronized(lock) {
+                            if (holding) {
+                                held.add(bytes)
+                                return
+                            }
+                        }
+                        listener.onBinary(bytes)
+                    }
+
+                    override fun onClose(
+                        code: Int,
+                        reason: String,
+                    ) = listener.onClose(code, reason)
+                }
+            return inner.open(url, timeout, relay)
+        }
     }
 
     /** A transport whose sockets a test can cut, as a dropped connection: the engine hears a 1006 and nothing after. */
