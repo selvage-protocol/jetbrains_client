@@ -141,6 +141,97 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         return FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file), true)!!
     }
 
+    /** A host IDE whose folder holds one file, with one engine guest seated and attributed in the room. */
+    private fun hostWithOneFile(): Pair<RoomSession, SelvageSession> {
+        val root = Files.createDirectories(Path.of(project.basePath!!))
+        Files.writeString(root.resolve("README.md"), "hello\n")
+        LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root)!!.refresh(false, true)
+        val service = SelvageService.get()
+        service.host(project)
+        val session = service.current ?: throw AssertionError("no session after hosting; said: ${said.sentences()}")
+        val guest = SelvageSession.join(session.invite()!!, options("Bob")).also { engines.add(it) }
+        eventually("the guest is committed") { guest.ownRole() == Role.GUEST }
+        eventually("the guest has the listing") { guest.listing() == listOf("README.md") }
+        eventually("the host has attributed the guest") { session.participants().size == 1 }
+        return session to guest
+    }
+
+    /**
+     * The reported shape, measured: the peer holds and selects the file while this window has no
+     * document bound for it, and the window then opens the file. Binding raises no event — the path is
+     * already in the open set because the peer holds it, and its text was served when the peer took
+     * that hold — so the bind itself has to draw the selection the peer has already made.
+     */
+    fun testASelectionThatArrivesBeforeTheDocumentBindsIsDrawnWhenItBinds() {
+        val (session, guest) = hostWithOneFile()
+        guest.open("README.md")
+        // The host serves a path a guest holds even though no editor of this window holds it.
+        eventually("the host's replica holds the text the guest's hold was served") {
+            session.engine.text("README.md") == "hello\n"
+        }
+        assertFalse("the file is not bound in this window yet", session.sync.isBound("README.md"))
+
+        guest.setCursor("README.md", Selection(1, 4))
+        eventually("the guest's selection resolves in the host's engine") {
+            session.engine.cursors().any {
+                it.clientId == guest.awarenessClientId() && it.selection == Selection(1, 4)
+            }
+        }
+        assertTrue(
+            "nothing is drawn while the document is unbound",
+            session.presence.lastDrawn["README.md"].isNullOrEmpty(),
+        )
+
+        openInEditor(Path.of(project.basePath!!).resolve("README.md"))
+        eventually("the open document is bound") { session.sync.isBound("README.md") }
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+
+        assertEquals(
+            "the selection is drawn the moment its document binds, before the peer moves again",
+            listOf(1 to 4),
+            session.presence
+                .lastDrawn["README.md"]
+                .orEmpty()
+                .map { it.anchor to it.head },
+        )
+    }
+
+    /** The healthy order: the document is bound before the peer's selection arrives, so the presence event draws it. */
+    fun testASelectionThatArrivesAfterTheDocumentBindsIsDrawnOnTheFirstPresence() {
+        val (session, guest) = hostWithOneFile()
+        openInEditor(Path.of(project.basePath!!).resolve("README.md"))
+        eventually("the open document is bound") { session.sync.isBound("README.md") }
+        eventually("the host's replica holds the text of its own file") {
+            session.engine.text("README.md") == "hello\n"
+        }
+
+        guest.open("README.md")
+        eventually("the guest holds the text") { guest.text("README.md") == "hello\n" }
+        guest.setCursor("README.md", Selection(1, 4))
+        eventually("the first presence draws the selection") {
+            session.presence.lastDrawn["README.md"]?.any { it.anchor == 1 && it.head == 4 } == true
+        }
+    }
+
+    /** The literal report shape: the file is already open and bound, and the peer opens it and selects. */
+    fun testASelectionInAnAlreadyBoundDocumentIsDrawnOnTheFirstPresence() {
+        val (session, guest) = hostWithOneFile()
+        openInEditor(Path.of(project.basePath!!).resolve("README.md"))
+        eventually("the open document is bound") { session.sync.isBound("README.md") }
+
+        guest.open("README.md")
+        eventually("the guest holds the text") { guest.text("README.md") == "hello\n" }
+        guest.setCursor("README.md", Selection(1, 4))
+        eventually("the first presence draws the selection") {
+            session.presence.lastDrawn["README.md"]?.any { it.anchor == 1 && it.head == 4 } == true
+        }
+        // A linewise range over one line is the shape the report pressed `shift+v` for.
+        guest.setCursor("README.md", Selection(0, 5))
+        eventually("a later move is still drawn") {
+            session.presence.lastDrawn["README.md"]?.any { it.anchor == 0 && it.head == 5 } == true
+        }
+    }
+
     fun testTheIdeHostsAndAnEngineGuestEditsWithIt() {
         val root = Files.createDirectories(Path.of(project.basePath!!))
         Files.writeString(root.resolve("README.md"), "hello\n")

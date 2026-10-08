@@ -565,7 +565,7 @@ class RoomSession(
                 if (refusedSeeds.add(path)) Notifier.error(project, Say.wrap(Say.willNotShare(path, refusal) + "."))
                 return
             }
-            sync.bind(path, document, seed = true)
+            bindAndDraw(path, document, seed = true)
             return
         }
         val room = mirror ?: return
@@ -582,7 +582,29 @@ class RoomSession(
             engine.open(path)
             return
         }
-        sync.bind(path, document, seed = false)
+        bindAndDraw(path, document, seed = false)
+    }
+
+    /**
+     * Binds the document and draws the room's carets in it.
+     *
+     * The room reports a peer's caret when it moves, but `remoteCursors` skips one naming a path this
+     * window holds no document for, and the bind is not itself a redraw. No event stands in for one:
+     * a path a peer already holds is already in the open set, so the bind raises no `OpenSet`, and the
+     * text was served when the peer took its hold, so no `RemoteEdits` follows either. A peer already
+     * in the room when this window opens the file would otherwise go undrawn until they moved, which
+     * is why the Neovim companion draws on its own open and text-arrival paths
+     * (`nvim_client/companion/session.ts:426`) and the VS Code adapter on a visible-editor change
+     * (`vscode_client/src/adapter/extension.ts:789`). The text-arrival path here (`arrive`) needs no
+     * draw of its own: its caller is the edit frame that already redraws.
+     */
+    private fun bindAndDraw(
+        path: String,
+        document: Document,
+        seed: Boolean,
+    ) {
+        sync.bind(path, document, seed = seed)
+        redrawPresence()
     }
 
     /**
