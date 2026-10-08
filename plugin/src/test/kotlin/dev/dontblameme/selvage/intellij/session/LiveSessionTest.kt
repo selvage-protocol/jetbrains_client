@@ -131,7 +131,10 @@ class LiveSessionTest : HeavyPlatformTestCase() {
             try {
                 vfs.fsync()
             } catch (e: java.io.IOException) {
-                // A write the test already reported; the scratch still goes.
+                // A write the test already reported; the scratch still goes. Said rather than
+                // swallowed, because a flush that failed leaves the late write this drain exists
+                // to stop, and the next test is what would report it.
+                System.err.println("selvage-live: the file system's flush before the scratch was deleted failed: $e")
             }
             scratch.toFile().deleteRecursively()
         } finally {
