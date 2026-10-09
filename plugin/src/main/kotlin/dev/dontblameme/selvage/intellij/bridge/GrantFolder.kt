@@ -221,9 +221,13 @@ class GrantFolder(
         return null
     }
 
-    /** The file [path] names under its root, judged by [RoomPaths] alone and reading nothing. */
+    /**
+     * The file [path] names under its root, when the grant shares that name and [RoomPaths] allows it.
+     * Reading nothing: for a path already in the room, to hand the host its own file.
+     */
     fun local(path: String): Path? {
         val located = locate(path) ?: return null
+        if (!Grant.isGrantedPath(located.relative, fold)) return null
         return RoomPaths.under(located.root.path, located.relative)
     }
 
