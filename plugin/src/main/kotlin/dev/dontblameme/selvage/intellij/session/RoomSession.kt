@@ -485,7 +485,8 @@ class RoomSession(
         if (leaving || finished) return
         when (ending) {
             SessionEnding.CONNECTION_LOST -> {
-                Notifier.error(project, if (isHost) Say.disconnectedHost() else Say.disconnectedGuest())
+                // A host reaches this the way a guest does: the retries gave up (§9.1).
+                Notifier.error(project, Say.disconnected())
                 end()
             }
 
