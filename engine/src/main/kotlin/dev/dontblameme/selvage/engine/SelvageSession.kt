@@ -3,7 +3,6 @@ package dev.dontblameme.selvage.engine
 import dev.dontblameme.selvage.peer.Cursor
 import dev.dontblameme.selvage.peer.Ending
 import dev.dontblameme.selvage.peer.HostOptions
-import dev.dontblameme.selvage.peer.HostStore
 import dev.dontblameme.selvage.peer.Keepalive
 import dev.dontblameme.selvage.peer.Outcome
 import dev.dontblameme.selvage.peer.PeerOptions
@@ -138,16 +137,6 @@ class SessionOptions(
     val reconnect: ReconnectPolicy = ReconnectPolicy(),
     /** Free-form client identifier for the server's diagnostics (§5). */
     val client: String? = "selvage-jetbrains",
-    /**
-     * The host key's seed for a session that means to host; null mints one with the room. Only a
-     * caller that kept the seed of an earlier session has a use for this (§7.1, §9.1).
-     */
-    val hostSeed: ByteArray? = null,
-    /**
-     * Where a host keeps its key, its `issued` and the room's frame count between sessions
-     * (§7.1, `CANONICAL.md` §6.1); null is a host that lives only as long as this session.
-     */
-    val hostStore: HostStore? = null,
     /** Overrides the server's clocks, which a conformance harness may want; a client does not. */
     val keepalive: Keepalive? = null,
     /** `GET /meta`, which the room's grace is read from (§9.1). */
@@ -205,11 +194,9 @@ class SelvageSession private constructor(
     private var awarenessId = 0L
     private var requestId = 1L
     private val requests = HashMap<Long, CompletableFuture<Unit>>()
+    private var dialUrl = ""
     private var ownName = options.displayName
     private var left = false
-
-    /** The room's own URL, fragment stripped: what every retry re-hellos (§9.1). */
-    private var retryUrl = ""
 
     // Written under the lock and read from any thread without it.
     @Volatile
@@ -382,41 +369,34 @@ class SelvageSession private constructor(
 
     private fun mint(base: String): CompletableFuture<Unit> {
         val roomKey = FrameCrypto.randomBytes(32)
-        val hostKey = options.hostSeed?.let(SessionKey::fromSeed) ?: SessionKey.mint()
-        return CompletableFuture
-            .runAsync { applyGrace(base) }
-            .thenCompose { dial(Urls.sessionUrl(base)) }
-            .thenApply { info ->
-                locked {
-                    val token = info.token ?: throw SessionException("bad_message", "room.created carried no token")
-                    roomId = info.roomId
-                    seat(
-                        info,
-                        PeerOptions(
-                            info.roomId,
-                            roomKey,
-                            hostKey.public,
-                            options.keepalive ?: info.keepalive,
-                            seat = info.self.peerId,
-                            roster = info.peers.map { it.peerId },
-                            awarenessClientId = awarenessId,
-                            host = HostOptions(hostKey, content!!.listing, options.hostStore),
-                            recordFrames = false,
-                        ),
-                    )
-                    // A retry re-hellos the room this session minted, token and all: the base URL
-                    // would mint a second room, which is a loss of every peer's work (§9.1).
-                    retryUrl = Urls.sessionUrl(base, info.roomId, token)
-                    invite = Invite.link(retryUrl, roomKey, hostKey.public)
-                }
+        val hostKey = SessionKey.mint()
+        return dial(Urls.sessionUrl(base)).thenApply { info ->
+            locked {
+                val token = info.token ?: throw SessionException("bad_message", "room.created carried no token")
+                roomId = info.roomId
+                seat(
+                    info,
+                    PeerOptions(
+                        info.roomId,
+                        roomKey,
+                        hostKey.public,
+                        options.keepalive ?: info.keepalive,
+                        seat = info.self.peerId,
+                        roster = info.peers.map { it.peerId },
+                        awarenessClientId = awarenessId,
+                        host = HostOptions(hostKey, content!!.listing),
+                        recordFrames = false,
+                    ),
+                )
+                invite = Invite.link(Urls.sessionUrl(base, info.roomId, token), roomKey, hostKey.public)
             }
+        }
     }
 
     private fun admit(invite: Invite): CompletableFuture<Unit> {
         val base =
             Urls.baseOf(invite.socketUrl)
                 ?: throw SessionException("invite", "the invite does not address a session endpoint")
-        retryUrl = invite.socketUrl
         return CompletableFuture
             .runAsync { applyGrace(base) }
             .thenCompose { dial(invite.socketUrl) }
@@ -461,6 +441,7 @@ class SelvageSession private constructor(
         val attempt =
             locked {
                 generation += 1
+                dialUrl = url
                 handshaking = true
                 pendingSeat = seated
                 generation
@@ -714,14 +695,11 @@ class SelvageSession private constructor(
         socket = null
         val session = peer
         if (left || ending != null) return
-        if (!options.reconnect.enabled || session == null) {
+        // A host has no resume on this wire: no host store, so its drop ends the session.
+        if (isHost || !options.reconnect.enabled || session == null) {
             end(if (code == Wire.CLOSE_ROOM_GONE) SessionEnding.ROOM_GONE else SessionEnding.CONNECTION_LOST)
             return
         }
-        // A host recovers the way a guest does: the room it minted outlives its last connection
-        // for the grace, and §9.1's return is a re-hello on the room URL. What differs from the
-        // guest is the URL a retry dials — [retryUrl], the room's, which cannot mint a second
-        // room — and that a re-seated host republishes a state (`PeerSession.reseat`).
         session.detach()
         clearInbox()
         stopTimers()
@@ -741,7 +719,7 @@ class SelvageSession private constructor(
     }
 
     private fun retry() {
-        val url = locked { if (left || ending != null) null else retryUrl } ?: return
+        val url = locked { if (left || ending != null) null else dialUrl } ?: return
         dial(url).whenComplete { info, error ->
             locked {
                 if (left || ending != null) return@locked
@@ -758,7 +736,7 @@ class SelvageSession private constructor(
                 val session = peer ?: return@locked end(SessionEnding.CONNECTION_LOST)
                 attempts = 0
                 peerList = info.peers
-                session.reseat(clock(), info.self.peerId, info.peers.map { it.peerId } + info.self.peerId, awarenessId)
+                session.reseat(info.self.peerId, info.peers.map { it.peerId } + info.self.peerId, awarenessId)
                 events.add(SessionEvent.Seated)
                 drainInbox()
                 pump()
