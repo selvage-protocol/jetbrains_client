@@ -226,4 +226,15 @@ class GrantFolderTest : TestCase() {
         assertNull(folder.roomPathOf(root))
         assertEquals("src/main.kt", folder().roomPathOf(root.resolve("src/main.kt")))
     }
+
+    /** The local path of a path that names no root, and of one the grant never carries, is none. */
+    fun testALocalPathOfARoomPathStopsWhereTheGrantDoes() {
+        val folder = severalRoots()
+        assertEquals(root.resolve("src").resolve("main.kt"), folder.local("app/src/main.kt"))
+        assertEquals(scratch.resolve("other/nested/deep.txt"), folder.local("lib/nested/deep.txt"))
+        assertNull(folder.local("README.md"))
+        assertNull(folder.local("app/../outside/secret.txt"))
+        assertNull(folder.local("app/.env"))
+        assertNull(folder.local("app/.git/config"))
+    }
 }
