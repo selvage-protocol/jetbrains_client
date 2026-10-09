@@ -22,14 +22,19 @@ import java.nio.file.attribute.BasicFileAttributes
  * One root is the folder's own: its paths carry no prefix and the listing and the reads are what a
  * single-folder session has always served. Two or more put each root's name in front of its paths,
  * so two roots holding the same relative path are two room paths (`listing-walk.ts`).
+ *
+ * A root's name is the content root's: it is the prefix its paths carry here and the name the
+ * session's identity joins, and a content root given an explicit name (`.iml`, a framework's) can
+ * differ from its directory's.
  */
 class GrantFolder(
     val roots: List<Root>,
     private val fold: Boolean = Grant.hostFoldsCase(),
 ) {
     /**
-     * One folder a host shares: the directory, and the name its paths carry when the session
-     * shares more than one. The name is the folder's own, as `WorkspaceFolder.name` is.
+     * One folder a host shares: the directory, and the name its paths carry when the session shares
+     * more than one. That name is the session's label for the folder, as `WorkspaceFolder.name` is
+     * VS Code's.
      */
     data class Root(
         val path: Path,
