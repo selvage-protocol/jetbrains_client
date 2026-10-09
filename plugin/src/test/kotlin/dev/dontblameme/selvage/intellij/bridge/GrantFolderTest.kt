@@ -156,6 +156,10 @@ class GrantFolderTest : TestCase() {
         Files.writeString(other.resolve("ignored.log"), "ignored here too\n")
         Files.createSymbolicLink(other.resolve("escape"), outside)
         Files.writeString(root.resolve("only-in-app.txt"), "app only\n")
+        // A link from one root into the other, one to a directory and one to a file: both are links,
+        // and the second root is no more enterable through a link than a folder outside is.
+        Files.createSymbolicLink(root.resolve("linked-lib-dir"), other)
+        Files.createSymbolicLink(root.resolve("linked-lib-file.txt"), other.resolve("README.md"))
         return GrantFolder(listOf(GrantFolder.Root(root, "app"), GrantFolder.Root(other, "lib")))
     }
 
@@ -225,6 +229,28 @@ class GrantFolderTest : TestCase() {
         assertNull(folder.roomPathOf(outside.resolve("secret.txt")))
         assertNull(folder.roomPathOf(root))
         assertEquals("src/main.kt", folder().roomPathOf(root.resolve("src/main.kt")))
+    }
+
+    /** A link out of one root into another is still a link: the second root is not entered through it. */
+    fun testALinkFromOneRootIntoAnotherIsNotFollowed() {
+        val folder = severalRoots()
+        refusedBy(folder, "app/linked-lib-dir/README.md", GrantFolder.Refusal.NOT_A_FILE)
+        refusedBy(folder, "app/linked-lib-file.txt", GrantFolder.Refusal.NOT_A_FILE)
+        assertNull(folder.plainFile("app/linked-lib-dir/README.md"))
+        assertNull(folder.plainFile("app/linked-lib-file.txt"))
+    }
+
+    /**
+     * The names the grant never carries are refused through every way to a file — the read, the
+     * path the host opens, and the local path — and under a named root as under a bare path.
+     */
+    fun testTheNamesAGrantNeverCarriesAreRefusedUnderEveryRoot() {
+        val folder = severalRoots()
+        for (path in listOf("app/.git/config", "app/.env")) {
+            refusedBy(folder, path, GrantFolder.Refusal.NOT_GRANTED)
+            assertNull(path, folder.plainFile(path))
+            assertNull(path, folder.local(path))
+        }
     }
 
     /** The local path of a path that names no root, and of one the grant never carries, is none. */
