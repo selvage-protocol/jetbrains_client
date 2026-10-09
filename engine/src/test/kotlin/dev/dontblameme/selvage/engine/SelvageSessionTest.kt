@@ -353,6 +353,72 @@ class SelvageSessionTest {
         }
     }
 
+    /** What a host comes back to: the seat it held before the drop, and one that left while it was away. */
+    private class ReturnedRoom(
+        val hosting: SelvageSession,
+        val oldSeat: String,
+        val goneSeat: String,
+    )
+
+    /**
+     * A host whose socket drops, a guest that leaves while it is away, and the host back on the
+     * room URL. The drop of its own seat and that `peer.left` both miss it, so the roster the
+     * server hands back on the re-hello is the only place its return can learn what the room is.
+     */
+    private fun hostReturnedToADepartedRoom(): ReturnedRoom {
+        val hosting = host()
+        val stays = join(hosting)
+        val leaves = join(hosting, name = "Cy")
+
+        fun roles() = "host=${hosting.seat} roles=${hosting.rolesBySeat()}"
+        awaitEvent("each guest to hold the role the host gave it", ::roles) {
+            hosting.rolesBySeat()[stays.seat] == Role.GUEST &&
+                hosting.rolesBySeat()[leaves.seat] == Role.GUEST
+        }
+        val oldSeat = hosting.seat!!
+        val goneSeat = leaves.seat!!
+
+        relay.connection(oldSeat).drop()
+        relay.settle()
+        leaves.leave()
+        relay.settle()
+        advance(500)
+        advance(300)
+        assertTrue(hosting.seat != oldSeat, "the host is a new peer")
+
+        awaitEvent("the state the return publishes", ::roles) {
+            hosting.rolesBySeat()[hosting.seat] == Role.HOST
+        }
+        return ReturnedRoom(hosting, oldSeat, goneSeat)
+    }
+
+    @Test
+    fun `a returning host drops the seats that left while it was away`() {
+        val room = hostReturnedToADepartedRoom()
+        assertTrue(
+            room.goneSeat !in room.hosting.rolesBySeat(),
+            "the return seats a key where the guest that left during the absence was: ${room.hosting.rolesBySeat()}",
+        )
+    }
+
+    @Test
+    fun `a returning host seats a newcomer in the room, not in its own dead seat`() {
+        val room = hostReturnedToADepartedRoom()
+        val newcomer = join(room.hosting, name = "Dee")
+
+        fun observed() = "newcomer=${newcomer.seat} roles=${room.hosting.rolesBySeat()}"
+        awaitEvent("the host to answer the newcomer's announcement", ::observed) { newcomer.ownRole() != null }
+        assertEquals(
+            Role.GUEST,
+            room.hosting.rolesBySeat()[newcomer.seat],
+            "the seat the newcomer was committed to: ${observed()}",
+        )
+        assertTrue(
+            room.oldSeat !in room.hosting.rolesBySeat(),
+            "the newcomer was seated where the host's dead seat was: ${observed()}",
+        )
+    }
+
     @Test
     fun `a refused return ends the hosting session rather than retrying`() {
         val seen = Recorded()
