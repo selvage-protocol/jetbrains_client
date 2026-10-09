@@ -14,7 +14,7 @@
 #   SelvageService.kt         `CLIENT`, the identity the plugin sends in `session.hello`
 #                             (`selvage-jetbrains/<version>`)
 #
-# Nothing else carries it. The engine has no version of its own, the README and `docs/` name the
+# Nothing else carries it. The engine has no version of its own, the README names the
 # zip as `selvage-<version>.zip`, and the end-to-end driver's descriptor
 # (`plugin/src/e2e/resources/META-INF/plugin.xml`) carries the driver's own version, which is never
 # published. The change notes in `plugin/src/main/resources/META-INF/plugin.xml` are prose written
