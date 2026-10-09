@@ -105,4 +105,38 @@ class SelvageServiceTest : BasePlatformTestCase() {
             parent.toFile().deleteRecursively()
         }
     }
+
+    /**
+     * Two disjoint roots can be called the same — two checkouts both named `app`. The name prefixes
+     * their paths, so one of them has to take a number: the one that comes first by real path keeps
+     * the bare name, the other becomes `app-2`, and each root's files stay reachable under its own
+     * prefix rather than the first root's serving both.
+     */
+    fun testTwoRootsOfTheSameNameArePrefixedApart() {
+        val scratch = Files.createDirectories(Files.createTempDirectory("selvage-same-name"))
+        val first = Files.createDirectories(scratch.resolve("a/app"))
+        val second = Files.createDirectories(scratch.resolve("b/app"))
+        Files.writeString(first.resolve("main.kt"), "the first app\n")
+        Files.writeString(second.resolve("main.kt"), "the second app\n")
+        val firstFile =
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(first)
+                ?: throw AssertionError("the folder $first did not appear in the VFS")
+        try {
+            ModuleRootModificationUtil.updateModel(module) { model ->
+                model.contentEntries.toList().forEach { model.removeContentEntry(it) }
+                model.addContentEntry(firstFile)
+            }
+            ModuleRootModificationUtil.addContentRoot(module, second.toString())
+            val roots = SelvageService.get().hostRoots(project)
+            assertEquals(mapOf(first to "app", second to "app-2"), roots.associate { it.path to it.name })
+            val folder = GrantFolder(roots)
+            assertEquals(setOf("app/main.kt", "app-2/main.kt"), folder.walk().paths.toSet())
+            assertEquals(GrantFolder.Read.Text("the first app\n"), folder.read("app/main.kt"))
+            assertEquals(GrantFolder.Read.Text("the second app\n"), folder.read("app-2/main.kt"))
+            assertEquals("app/main.kt", folder.roomPathOf(first.resolve("main.kt")))
+            assertEquals("app-2/main.kt", folder.roomPathOf(second.resolve("main.kt")))
+        } finally {
+            scratch.toFile().deleteRecursively()
+        }
+    }
 }
