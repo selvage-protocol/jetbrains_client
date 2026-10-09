@@ -36,6 +36,7 @@ import dev.dontblameme.selvage.intellij.ui.StatusWidgets
 import dev.dontblameme.selvage.peer.InMemoryHostStore
 import dev.dontblameme.selvage.sealed.Role
 import java.awt.datatransfer.StringSelection
+import java.io.IOException
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -129,18 +130,39 @@ class SelvageService : Disposable {
      * them, each path qualified by the root it came from (VS Code's `workspaceFolders`). A root that
      * cannot be read is left out rather than failing the room, the way an unreadable folder is today,
      * and a project with none at all falls back to the folder it was opened on.
+     *
+     * A root that sits inside another is left out and the outermost kept: IntelliJ mints one content
+     * root per module and a root module's folder holds its submodules' folders, so the common
+     * multi-module project would otherwise list one file twice and, when two module folders share a
+     * name, make one root unreachable. VS Code's `workspaceFolders` are the user's own choice and
+     * normally disjoint, so its walk is no guide to this input. Leaving the nested root out also
+     * keeps exactly the old sharing for such a project: one folder, unprefixed paths.
      */
     internal fun hostRoots(project: Project): List<GrantFolder.Root> {
         val local = LocalFileSystem.getInstance()
-        val roots =
+        // The real path compares the roots: a linked folder and another spelling of it are one root,
+        // and a module folder inside another is the nested one. Stored is the path the IDE holds, so
+        // the session keeps the spelling the window was opened on.
+        val candidates =
             ProjectRootManager
                 .getInstance(project)
                 .contentRoots
                 .mapNotNull { root ->
                     val path = local.getNioPath(root) ?: return@mapNotNull null
                     if (!path.toFile().isDirectory) return@mapNotNull null
-                    GrantFolder.Root(path, root.name)
-                }.distinctBy { it.path }
+                    val real =
+                        try {
+                            path.toRealPath()
+                        } catch (e: IOException) {
+                            return@mapNotNull null
+                        }
+                    GrantFolder.Root(path, root.name) to real
+                }
+        val roots =
+            candidates
+                .distinctBy { (_, real) -> real }
+                .filter { (_, real) -> candidates.none { (_, other) -> other != real && real.startsWith(other) } }
+                .map { (root, _) -> root }
         if (roots.isNotEmpty()) return roots
         val base = project.basePath?.let { Path.of(it) }?.takeIf { it.toFile().isDirectory } ?: return emptyList()
         return listOf(GrantFolder.Root(base))

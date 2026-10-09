@@ -5,6 +5,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.dontblameme.selvage.engine.ErrorSink
 import dev.dontblameme.selvage.intellij.TestIde
+import dev.dontblameme.selvage.intellij.bridge.GrantFolder
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -73,6 +74,35 @@ class SelvageServiceTest : BasePlatformTestCase() {
             assertEquals(both.map { it.path.fileName.toString() }, both.map { it.name })
         } finally {
             second.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * Module roots nest: a root module's folder holds its submodules' folders. Such a project shares
+     * the outermost folder alone — one root, its paths unprefixed and listed once — instead of the
+     * same file twice under two roots that can carry the same name.
+     */
+    fun testHostingSharesTheOutermostOfNestedContentRoots() {
+        val parent = Files.createDirectories(Files.createTempDirectory("selvage-nested-parent"))
+        val child = Files.createDirectories(parent.resolve("child"))
+        Files.writeString(parent.resolve("README.md"), "hello\n")
+        Files.writeString(child.resolve("deep.txt"), "deep\n")
+        val parentFile =
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(parent)
+                ?: throw AssertionError("the folder $parent did not appear in the VFS")
+        try {
+            ModuleRootModificationUtil.updateModel(module) { model ->
+                model.contentEntries.toList().forEach { model.removeContentEntry(it) }
+                model.addContentEntry(parentFile)
+            }
+            ModuleRootModificationUtil.addContentRoot(module, child.toString())
+            val roots = SelvageService.get().hostRoots(project)
+            assertEquals(listOf(parent), roots.map { it.path })
+            val listing = GrantFolder(roots).walk().paths
+            assertEquals(listOf("README.md", "child/deep.txt"), listing)
+            assertEquals(listing.distinct().size, listing.size)
+        } finally {
+            parent.toFile().deleteRecursively()
         }
     }
 }
