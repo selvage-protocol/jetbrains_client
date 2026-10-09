@@ -13,7 +13,7 @@ repositories {
     }
 }
 
-version = "0.3.1"
+version = "0.4.0"
 
 val ideVersion = providers.gradleProperty("selvage.ideVersion").getOrElse("2026.2.3")
 
