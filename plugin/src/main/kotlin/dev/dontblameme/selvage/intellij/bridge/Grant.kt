@@ -336,12 +336,30 @@ object Grant {
         var cut: Cut? = null
     }
 
+    /**
+     * One folder a walk starts from: the directory itself, and the name its paths are prefixed
+     * with when a session shares more than one folder. Two folders need their names in front, or
+     * two `src/main.rs` would be one room path (`listing-walk.ts`).
+     */
+    data class ListingRoot<D>(
+        val dir: D,
+        val name: String,
+    )
+
+    /**
+     * The listing of every root, one walk over all of them: one shared work budget and one pair of
+     * listing bounds, so a folder that is left short of its files leaves the roots after it unread.
+     */
     fun <D> walkListing(
         source: WalkSource<D>,
-        root: D,
+        roots: List<ListingRoot<D>>,
     ): WalkResult {
         val state = WalkState()
-        walk(source, root, "", emptyList(), state)
+        val qualified = roots.size > 1
+        for (root in roots) {
+            if (state.cut != null) break
+            walk(source, root.dir, "", if (qualified) "${root.name}/" else "", emptyList(), state)
+        }
         return WalkResult(sortGrant(state.paths), state.entered, state.cut)
     }
 
@@ -349,6 +367,7 @@ object Grant {
         source: WalkSource<D>,
         dir: D,
         relative: String,
+        prefix: String,
         inherited: List<IgnoreSource>,
         state: WalkState,
     ) {
@@ -369,8 +388,8 @@ object Grant {
             if (!isGrantedPath(child, source.fold) || isIgnoredPath(ignores, child, directory, source.fold)) continue
             if (entry.kind == WalkEntry.Kind.OTHER) continue
             if (directory) {
-                state.entered.add(child)
-                source.child(dir, entry.name)?.let { walk(source, it, child, ignores, state) }
+                state.entered.add("$prefix$child")
+                source.child(dir, entry.name)?.let { walk(source, it, child, prefix, ignores, state) }
                 continue
             }
             if (isBinaryNamedPath(child)) continue
@@ -380,7 +399,8 @@ object Grant {
             }
             state.nodes -= 1
             if (!source.shareable(dir, entry.name)) continue
-            val size = child.toByteArray(Charsets.UTF_8).size
+            val path = "$prefix$child"
+            val size = path.toByteArray(Charsets.UTF_8).size
             val bound =
                 when {
                     state.paths.size >= MAX_GRANT_PATHS -> Cut.PATHS
@@ -391,7 +411,7 @@ object Grant {
                 state.cut = bound
                 return
             }
-            state.paths.add(child)
+            state.paths.add(path)
             state.bytes += size
         }
     }

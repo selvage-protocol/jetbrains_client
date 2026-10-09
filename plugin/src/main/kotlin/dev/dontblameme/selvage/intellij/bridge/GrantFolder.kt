@@ -13,15 +13,34 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 
 /**
- * The folder a host shares, read on a peer's behalf (`DESIGN.md` §4.2). A path a peer names is
- * untrusted: it must pass [Grant.isGrantedPath], and it is then resolved one segment at a time,
- * never following a link. A link, a directory where a file was expected, or a name that is only a
- * case-folded match is refused rather than read.
+ * The folders a host shares, read on a peer's behalf (`DESIGN.md` §4.2). A path a peer names is
+ * untrusted: it must name one of the roots — the path's own first segment when there is more than
+ * one — and [Grant.isGrantedPath] then holds for the path inside it, which is resolved one segment
+ * at a time, never following a link. A link, a directory where a file was expected, or a name that
+ * is only a case-folded match is refused rather than read.
+ *
+ * One root is the folder's own: its paths carry no prefix and the listing and the reads are what a
+ * single-folder session has always served. Two or more put each root's name in front of its paths,
+ * so two roots holding the same relative path are two room paths (`listing-walk.ts`).
  */
 class GrantFolder(
-    val root: Path,
+    val roots: List<Root>,
     private val fold: Boolean = Grant.hostFoldsCase(),
 ) {
+    /**
+     * One folder a host shares: the directory, and the name its paths carry when the session
+     * shares more than one. The name is the folder's own, as `WorkspaceFolder.name` is.
+     */
+    data class Root(
+        val path: Path,
+        val name: String,
+    ) {
+        constructor(path: Path) : this(path, path.fileName?.toString() ?: "")
+    }
+
+    /** The one folder a single-root session shares. */
+    constructor(root: Path, fold: Boolean = Grant.hostFoldsCase()) : this(listOf(Root(root)), fold)
+
     enum class Refusal { NOT_GRANTED, MISSING, NOT_A_FILE, TOO_LARGE, BINARY }
 
     sealed interface Read {
@@ -37,19 +56,25 @@ class GrantFolder(
     /**
      * The text a peer may be given for [path], LF-only, or why there is none.
      *
-     * Each segment is checked with links not followed (`lstat`), the leaf is opened with `O_NOFOLLOW`,
-     * and the file read is then required to lie under the folder's real path. The IDE installs its own
-     * default filesystem provider, which offers no `SecureDirectoryStream`, so the steps cannot be
-     * resolved inside the descriptor the step before opened. A residual: a directory on the path
-     * swapped for a link between its check and the open can be followed for that one read, and the
-     * containment check after the read narrows that to a swap undone within the read. A second: a file
-     * swapped for a named pipe between its check and the open blocks the open until a writer comes,
-     * and the calling thread with it, since Java opens with no `O_NONBLOCK`. The threat in both is a
-     * process on the host racing the host's own folder.
+     * The path is first resolved to the root it names and its path inside it: a path no root holds,
+     * or one whose first segment names no root when the session shares several, is not granted at
+     * all. Each segment inside the root is then checked with links not followed (`lstat`), the leaf
+     * is opened with `O_NOFOLLOW`, and the file read is then required to lie under the root's real
+     * path. The IDE installs its own default filesystem provider, which offers no
+     * `SecureDirectoryStream`, so the steps cannot be resolved inside the descriptor the step before
+     * opened. A residual: a directory on the path swapped for a link between its check and the open
+     * can be followed for that one read, and the containment check after the read narrows that to a
+     * swap undone within the read. A second: a file swapped for a named pipe between its check and
+     * the open blocks the open until a writer comes, and the calling thread with it, since Java
+     * opens with no `O_NONBLOCK`. The threat in both is a process on the host racing the host's own
+     * folder.
      */
     fun read(path: String): Read {
-        if (!Grant.isGrantedPath(path, fold)) return Read.Refused(Refusal.NOT_GRANTED)
-        val segments = path.split('/')
+        val located = locate(path) ?: return Read.Refused(Refusal.NOT_GRANTED)
+        val relative = located.relative
+        if (!Grant.isGrantedPath(relative, fold)) return Read.Refused(Refusal.NOT_GRANTED)
+        val segments = relative.split('/')
+        val root = located.root.path
         val realRoot =
             try {
                 root.toRealPath()
@@ -58,7 +83,7 @@ class GrantFolder(
             }
         var dir = root
         val ignores = ArrayList<Grant.IgnoreSource>()
-        rootExclude()?.let { ignores.add(Grant.IgnoreSource("", it)) }
+        rootExclude(root)?.let { ignores.add(Grant.IgnoreSource("", it)) }
         for ((index, segment) in segments.withIndex()) {
             val exact =
                 try {
@@ -82,7 +107,7 @@ class GrantFolder(
                 dir = next
                 continue
             }
-            if (Grant.isIgnoredPath(ignores, path, false, fold)) return Read.Refused(Refusal.NOT_GRANTED)
+            if (Grant.isIgnoredPath(ignores, relative, false, fold)) return Read.Refused(Refusal.NOT_GRANTED)
             if (!attributes.isRegularFile || attributes.isSymbolicLink) return Read.Refused(Refusal.NOT_A_FILE)
             if (attributes.size() > Grant.MAX_GRANT_FILE_BYTES) return Read.Refused(Refusal.TOO_LARGE)
             val bytes =
@@ -106,15 +131,16 @@ class GrantFolder(
     }
 
     /**
-     * The file [path] names in the folder, when each step to it is a plain directory and it is a plain
+     * The file [path] names in its root, when each step to it is a plain directory and it is a plain
      * file, judged from the steps' attributes alone and reading nothing. For opening a listed path in
      * the host's own editor; the editor opens it by path afterwards, so a swap in between is the same
      * residual [read] states.
      */
     fun plainFile(path: String): Path? {
-        if (!Grant.isGrantedPath(path, fold)) return null
-        val segments = path.split('/')
-        var at = root
+        val located = locate(path) ?: return null
+        if (!Grant.isGrantedPath(located.relative, fold)) return null
+        val segments = located.relative.split('/')
+        var at = located.root.path
         for ((index, segment) in segments.withIndex()) {
             at = RoomPaths.child(at, segment) ?: return null
             val attributes =
@@ -132,7 +158,7 @@ class GrantFolder(
      * `.git/info/exclude`, read only through a plain `.git` and a plain `info`, as the walk reads it:
      * a linked `.git` brings no rules from outside the folder.
      */
-    private fun rootExclude(): String? {
+    private fun rootExclude(root: Path): String? {
         var dir = root
         for (segment in listOf(".git", "info")) {
             dir = dir.resolve(segment)
@@ -162,10 +188,60 @@ class GrantFolder(
             null
         }
 
+    // --- the root a path names ---
+
+    /**
+     * The root [path] belongs to and the path inside it, or null when no root holds it. A single
+     * root takes the path as its own; several put the root's name in front of every path, so the
+     * first segment names the root and nothing else does (`listing-walk.ts`).
+     */
+    private class Located(
+        val root: Root,
+        val relative: String,
+    )
+
+    private fun locate(path: String): Located? {
+        roots.singleOrNull()?.let { return if (path.isEmpty()) null else Located(it, path) }
+        val slash = path.indexOf('/')
+        if (slash <= 0) return null
+        val root = roots.firstOrNull { it.name == path.substring(0, slash) } ?: return null
+        return Located(root, path.substring(slash + 1))
+    }
+
+    /**
+     * The room path a file under one of the roots is shared as, or null when it is under none. The
+     * roots are the ones the session captured, so a folder the window is opened on afterwards is not
+     * quietly added to the grant.
+     */
+    fun roomPathOf(file: Path): String? {
+        for (root in roots) {
+            val relative = under(root.path, file) ?: continue
+            return if (roots.size > 1) "${root.name}/$relative" else relative
+        }
+        return null
+    }
+
+    /** The file [path] names under its root, judged by [RoomPaths] alone and reading nothing. */
+    fun local(path: String): Path? {
+        val located = locate(path) ?: return null
+        return RoomPaths.under(located.root.path, located.relative)
+    }
+
+    /** [file] as it reads inside [base], or null when it is not inside it or is [base] itself. */
+    private fun under(
+        base: Path,
+        file: Path,
+    ): String? {
+        if (!file.startsWith(base)) return null
+        val relative = base.relativize(file).joinToString("/")
+        return relative.ifEmpty { null }
+    }
+
     // --- the listing ---------------------------------------------------------------------------
 
-    /** The listing this folder grants: the walk of `listing-walk.ts`, links never entered. */
-    fun walk(): Grant.WalkResult = Grant.walkListing(PathSource(fold), root)
+    /** The listing every root grants: the walk of `listing-walk.ts`, links never entered. */
+    fun walk(): Grant.WalkResult =
+        Grant.walkListing(PathSource(fold), roots.map { Grant.ListingRoot(it.path, it.name) })
 
     private class PathSource(
         override val fold: Boolean,

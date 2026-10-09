@@ -36,7 +36,6 @@ import dev.dontblameme.selvage.intellij.bridge.Invites
 import dev.dontblameme.selvage.intellij.bridge.Mirror
 import dev.dontblameme.selvage.intellij.bridge.PeerColours
 import dev.dontblameme.selvage.intellij.bridge.People
-import dev.dontblameme.selvage.intellij.bridge.RoomPaths
 import dev.dontblameme.selvage.intellij.bridge.Say
 import dev.dontblameme.selvage.intellij.bridge.Words
 import dev.dontblameme.selvage.intellij.settings.SelvageSettings
@@ -234,10 +233,10 @@ class RoomSession(
                     com.intellij.openapi.vfs.VirtualFileManager.VFS_CHANGES,
                     object : BulkFileListener {
                         override fun after(events: List<VFileEvent>) {
-                            val root = folder!!.root.toString()
-                            if (events.any {
-                                    isUnder(it.path, root) &&
-                                        (it !is com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent)
+                            val roots = folder!!.roots.map { it.path.toString() }
+                            if (events.any { event ->
+                                    roots.any { isUnder(event.path, it) } &&
+                                        (event !is com.intellij.openapi.vfs.newvfs.events.VFileContentChangeEvent)
                                 }
                             ) {
                                 scheduleGrant()
@@ -280,10 +279,11 @@ class RoomSession(
 
     fun displayName(): String = engine.displayName
 
+    /** What this session is called: the folders a host shares, or the host a guest is with. */
     fun identity(): String {
         if (isHost) {
-            val name = folder!!.root.fileName?.toString() ?: ""
-            return if (name == "") Words.SHARED_SESSION_IDENTITY else Words.hostingIdentity(name)
+            val names = folder!!.roots.joinToString(", ") { it.name }
+            return if (names == "") Words.SHARED_SESSION_IDENTITY else Words.hostingIdentity(names)
         }
         return Words.guestIdentity(hostName.ifEmpty { null })
     }
@@ -368,7 +368,7 @@ class RoomSession(
     fun fileOf(path: String): Path? {
         if (!Grant.isGrantedPath(path)) return null
         mirror?.let { return it.fileOf(path) }
-        return folder?.root?.let { RoomPaths.under(it, path) }
+        return folder?.local(path)
     }
 
     /**
@@ -543,11 +543,22 @@ class RoomSession(
 
     // --- documents ----------------------------------------------------------------------------
 
+    /**
+     * The room path a file is shared under: a guest's file under its mirror, or one of a host's own
+     * under the roots the session captured. A file under none of them is not shared, and a host's
+     * roots are the ones held at invite time, so a folder the window is opened on afterwards is not
+     * quietly added to the grant.
+     */
     fun pathOf(file: VirtualFile): String? {
-        val root = (mirror?.root ?: folder?.root) ?: return null
-        val base = LocalFileSystem.getInstance().findFileByNioFile(root) ?: return null
-        if (!VfsUtilCore.isAncestor(base, file, true)) return null
-        return VfsUtilCore.getRelativePath(file, base, '/')
+        val mirror = mirror
+        if (mirror != null) {
+            val base = LocalFileSystem.getInstance().findFileByNioFile(mirror.root) ?: return null
+            if (!VfsUtilCore.isAncestor(base, file, true)) return null
+            return VfsUtilCore.getRelativePath(file, base, '/')
+        }
+        val roots = folder ?: return null
+        val at = LocalFileSystem.getInstance().getNioPath(file) ?: return null
+        return roots.roomPathOf(at)
     }
 
     private fun opened(file: VirtualFile) {
