@@ -33,7 +33,6 @@ import dev.dontblameme.selvage.intellij.settings.SelvageSettings
 import dev.dontblameme.selvage.intellij.ui.Notifier
 import dev.dontblameme.selvage.intellij.ui.Prompts
 import dev.dontblameme.selvage.intellij.ui.StatusWidgets
-import dev.dontblameme.selvage.peer.InMemoryHostStore
 import dev.dontblameme.selvage.sealed.Role
 import java.awt.datatransfer.StringSelection
 import java.io.IOException
@@ -58,16 +57,8 @@ class SelvageService : Disposable {
     /** Where guests' mirrors are minted: `<system>/selvage/rooms/<room>/<window>`. */
     var storage: Path = PathManager.getSystemDir().resolve("selvage")
 
-    /**
-     * What a host keeps beside its key — the key, its `issued` and the room's frame count
-     * (`PROTOCOL.md` §7.1, `CANONICAL.md` §6.1). This one is this process's memory alone: a
-     * reloaded IDE is a new host with a new key, so nothing it holds is ever read back.
-     */
-    internal val hostStore = InMemoryHostStore()
-
     /** The engine's options for a display name; a test shortens the clocks here. */
-    var sessionOptions: (String) -> SessionOptions =
-        { SessionOptions(it, client = CLIENT, errors = errorSink, hostStore = hostStore) }
+    var sessionOptions: (String) -> SessionOptions = { SessionOptions(it, client = CLIENT, errors = errorSink) }
 
     /**
      * Where a caught error is recorded. The engine has no logger of its own, so the plugin backs
