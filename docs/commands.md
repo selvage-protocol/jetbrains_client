@@ -105,5 +105,4 @@ Each of these is this editor's own shape; none removes a command.
 | Clicking the session's name | The people list | The Selvage menu, with the people list in it and in the tool window | The menu reaches all twelve commands from the status bar, which has no palette beside it. |
 | A viewer's keystroke | Put back to the room's text | Refused by the editor: the document is read-only | The IDE can mark one document read-only; VS Code cannot, so it puts the text back. |
 | A failed save | The save's answer and its cause | A read-only file, a save the IDE refused, or one it held back is said; a write the IDE finishes in the background and that fails later is reported by the IDE's own notification | This platform writes files asynchronously and keeps the failure to itself. |
-| A hosting window that loses its connection | The session ends: `this client cannot resume a hosting session, so it will not reconnect.` | The session detaches, retries on the room's own URL and comes back inside the room's grace; a retry that gives up ends it with the guest's sentence | A dropped socket is not a leave, so the session retries while the room's grace lasts. |
 
