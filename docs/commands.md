@@ -26,9 +26,11 @@ dropped, a rename is redrawn, and the list closes when nobody is left to pick.
    server**.
 6. `the room is open. Send this link to your friend — it is on the clipboard.`, with **Copy again**.
 
-The project's folder is the grant. What a host leaves out is the VS Code client's list, which
-includes `.idea`, and the folder's own ignore files narrow it further. A file a peer asks for is
-read from disk with every step of its path checked, so a link out of the folder is refused.
+The project's folders are the grant: one folder means the room's paths are that folder's own, and two
+or more put each folder's name in front of its paths, so the same relative path in two folders is two
+room paths. What a host leaves out is the VS Code client's list, which includes `.idea`, and the
+folders' own ignore files narrow it further. A file a peer asks for is read from disk with every step
+of its path checked, so a link out of its folder is refused.
 
 ## Join a session from an invite link
 
@@ -98,7 +100,6 @@ Each of these is this editor's own shape; none removes a command.
 | Where a joined room opens | The window reloads onto the room's folder, after asking `joining replaces this window's folder…` | A new project window; your own project stays open | An IntelliJ window holds one project and opening another does not replace it, so there is nothing to warn about. The IDE asks where to open it when a project is open. |
 | Restricted Mode for the room's folder | Workspace trust | The project opens untrusted, in safe mode | The IDE's own form of the same protection. |
 | Workspace settings left out of the copy | `.vscode/**`, `*.code-workspace` | `.idea/**`, `.run/**`, `*.run.xml`, `*.iml`, `*.ipr`, `*.iws`, said in this client's own sentence | Those are the files this IDE would apply rather than show. |
-| A host with several folders | Paths qualified `<folder>/<path>` | One folder, the project's base | A project has one base directory. |
 | Clicking the session's name | The people list | The Selvage menu, with the people list in it and in the tool window | The menu reaches all twelve commands from the status bar, which has no palette beside it. |
 | A viewer's keystroke | Put back to the room's text | Refused by the editor: the document is read-only | The IDE can mark one document read-only; VS Code cannot, so it puts the text back. |
 | A failed save | The save's answer and its cause | A read-only file, a save the IDE refused, or one it held back is said; a write the IDE finishes in the background and that fails later is reported by the IDE's own notification | This platform writes files asynchronously and keeps the failure to itself. |

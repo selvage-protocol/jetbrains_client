@@ -47,7 +47,7 @@ clients use.
 
 | | |
 |---|---|
-| Host a session | Open a room on the server and share this project's folder. Asks for the server once and remembers it. |
+| Host a session | Open a room on the server and share this project's folders. Asks for the server once and remembers it. One folder means the room's paths are that folder's own; a project with several shares all of them, each path starting with the name of the folder it is in. |
 | Join a session from an invite link | Join the room the link names, in a new window on a copy of the room's files. |
 | Copy the invite link | Put the invite on the clipboard. The status bar's `Copy invite link` reads `Copied` for a moment. |
 | Open a document from the room | Open one of the room's documents. A host is told its own files are the room's. |
