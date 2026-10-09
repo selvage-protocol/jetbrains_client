@@ -13,7 +13,9 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.util.Alarm
 import dev.dontblameme.selvage.engine.ErrorSink
 import dev.dontblameme.selvage.engine.HostContent
@@ -119,6 +121,31 @@ class SelvageService : Disposable {
         fire()
     }
 
+    // --- the folders a host shares ----------------------------------------------------------------
+
+    /**
+     * What a host shares: every content root of the project, each under its own name, so a project
+     * opened on one folder shares that folder's own paths and one with several roots shares all of
+     * them, each path qualified by the root it came from (VS Code's `workspaceFolders`). A root that
+     * cannot be read is left out rather than failing the room, the way an unreadable folder is today,
+     * and a project with none at all falls back to the folder it was opened on.
+     */
+    internal fun hostRoots(project: Project): List<GrantFolder.Root> {
+        val local = LocalFileSystem.getInstance()
+        val roots =
+            ProjectRootManager
+                .getInstance(project)
+                .contentRoots
+                .mapNotNull { root ->
+                    val path = local.getNioPath(root) ?: return@mapNotNull null
+                    if (!path.toFile().isDirectory) return@mapNotNull null
+                    GrantFolder.Root(path, root.name)
+                }.distinctBy { it.path }
+        if (roots.isNotEmpty()) return roots
+        val base = project.basePath?.let { Path.of(it) }?.takeIf { it.toFile().isDirectory } ?: return emptyList()
+        return listOf(GrantFolder.Root(base))
+    }
+
     // --- Host a session --------------------------------------------------------------------------
 
     fun host(project: Project) {
@@ -135,8 +162,8 @@ class SelvageService : Disposable {
             if (!prompts().confirm(project, Say.hostWarning(), "Leave and host")) return
             inSession.end()
         }
-        val base = project.basePath?.let { Path.of(it) }
-        if (base == null || !base.toFile().isDirectory) {
+        val roots = hostRoots(project)
+        if (roots.isEmpty()) {
             Notifier.warn(project, Say.openFolderFirst())
             return
         }
@@ -148,7 +175,7 @@ class SelvageService : Disposable {
         }
         settings().update { lastServer = address }
         val name = resolveDisplayName(project) ?: return
-        val folder = GrantFolder(base)
+        val folder = GrantFolder(roots)
         val listing = AtomicReference<List<String>>(emptyList())
         val sessionHolder = AtomicReference<RoomSession?>()
         val engine =
