@@ -1,6 +1,5 @@
 # What is not here yet
 
-- The plugin is not on the JetBrains Marketplace. Build the zip and install it from disk.
 - A host that loses its connection does not come back: the engine has no way yet to reclaim a
   hosting session, so the room waits out its grace and ends. A guest reconnects.
 - While a modal dialog is open in the IDE, the room's changes to your documents wait and land when
