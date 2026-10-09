@@ -235,10 +235,12 @@ object Say {
 
     fun leftSession() = "Selvage: left the session."
 
-    fun disconnectedGuest() = "Selvage: the connection ended and the session is over; it could not be re-established."
-
-    fun disconnectedHost() =
-        "Selvage: the connection ended and the session is over; this client cannot resume a hosting session, so it will not reconnect."
+    /**
+     * The end of a session the client tried to re-establish and could not. A host that gives up
+     * says the same thing a guest does: the room's own ending is not this window's to report.
+     * VS Code words a host's end as a client that never retries, which is not this one (§9.1).
+     */
+    fun disconnected() = "Selvage: the connection ended and the session is over; it could not be re-established."
 
     fun roomFull() = "Selvage: the room is full — it seats no more people."
 
