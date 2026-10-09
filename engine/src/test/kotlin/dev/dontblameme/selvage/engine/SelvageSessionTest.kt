@@ -257,6 +257,20 @@ class SelvageSessionTest {
     }
 
     @Test
+    fun `a dropped host ends its session and does not reconnect`() {
+        val seen = Recorded()
+        val host = host(seen)
+        relay.connection(host.seat!!).drop()
+        relay.settle()
+        // §9.1: a host has no resume on this wire, so its drop is the end of the session.
+        assertEquals(emptyList(), seen.all<SessionEvent.Reconnecting>(), "a host does not retry")
+        assertEquals(SessionEnding.CONNECTION_LOST, host.ending)
+        assertEquals(listOf(SessionEvent.Ended(SessionEnding.CONNECTION_LOST)), seen.all<SessionEvent.Ended>())
+        advance(10_000)
+        assertEquals(emptyList(), seen.all<SessionEvent.Reconnecting>(), "the clock does not arm a retry")
+    }
+
+    @Test
     fun `a reconnect whose handshake is refused retries once, and leaves no second seat`() {
         val host = host()
         val seen = Recorded()
