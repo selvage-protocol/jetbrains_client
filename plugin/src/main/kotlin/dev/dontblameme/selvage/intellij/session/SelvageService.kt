@@ -127,9 +127,11 @@ class SelvageService : Disposable {
     /**
      * What a host shares: every content root of the project, each under its own name, so a project
      * opened on one folder shares that folder's own paths and one with several roots shares all of
-     * them, each path qualified by the root it came from (VS Code's `workspaceFolders`). A root that
-     * cannot be read is left out rather than failing the room, the way an unreadable folder is today,
-     * and a project with none at all falls back to the folder it was opened on.
+     * them, each path qualified by the root it came from (VS Code's `workspaceFolders`). Two roots
+     * whose names are the same are told apart by a number, so neither is left behind the other's
+     * prefix. A root that cannot be read is left out rather than failing the room, the way an
+     * unreadable folder is today, and a project with none at all falls back to the folder it was
+     * opened on.
      *
      * A root that sits inside another is left out and the outermost kept: IntelliJ mints one content
      * root per module and a root module's folder holds its submodules' folders, so the common
@@ -158,14 +160,43 @@ class SelvageService : Disposable {
                         }
                     GrantFolder.Root(path, root.name) to real
                 }
-        val roots =
+        val kept =
             candidates
                 .distinctBy { (_, real) -> real }
                 .filter { (_, real) -> candidates.none { (_, other) -> other != real && real.startsWith(other) } }
-                .map { (root, _) -> root }
-        if (roots.isNotEmpty()) return roots
+        if (kept.isNotEmpty()) return named(kept)
         val base = project.basePath?.let { Path.of(it) }?.takeIf { it.toFile().isDirectory } ?: return emptyList()
         return listOf(GrantFolder.Root(base))
+    }
+
+    /**
+     * The kept roots, with the name each one's paths carry. Two disjoint roots can be called the same
+     * — two checkouts both called `src`, a `frontend/app` and a `backend/app` — and one name cannot
+     * prefix both, so the first root to bear a name keeps it and the rest take `name-2`, `name-3`, …
+     * Every name a root came with is claimed before any suffix is minted, so a root called `app-2` is
+     * never renamed by two roots called `app`.
+     *
+     * Which root is first is decided by the roots' real paths, not by the IDE's order: the order of
+     * `contentRoots` is the platform's own and is not documented, so a name that followed it would
+     * land on a different root from one run to the next. The roots stay in the order they were read,
+     * so a session whose names are unique shares exactly the listing it shared before.
+     */
+    private fun named(roots: List<Pair<GrantFolder.Root, Path>>): List<GrantFolder.Root> {
+        val order = roots.indices.sortedBy { roots[it].second.toString() }
+        val names = arrayOfNulls<String>(roots.size)
+        val taken = HashSet<String>()
+        for (index in order) {
+            val name = roots[index].first.name
+            if (taken.add(name)) names[index] = name
+        }
+        for (index in order) {
+            if (names[index] != null) continue
+            val name = roots[index].first.name
+            var suffix = 2
+            while (!taken.add("$name-$suffix")) suffix += 1
+            names[index] = "$name-$suffix"
+        }
+        return roots.mapIndexed { index, (root, _) -> root.copy(name = names[index] ?: root.name) }
     }
 
     // --- Host a session --------------------------------------------------------------------------
