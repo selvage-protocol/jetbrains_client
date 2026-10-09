@@ -2,6 +2,7 @@ package dev.dontblameme.selvage.intellij.session
 
 import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.dontblameme.selvage.engine.ErrorSink
 import dev.dontblameme.selvage.intellij.TestIde
@@ -138,5 +139,74 @@ class SelvageServiceTest : BasePlatformTestCase() {
         } finally {
             scratch.toFile().deleteRecursively()
         }
+    }
+
+    /**
+     * The IDE's order for a project's content roots is its own, so it decides nothing: the same two
+     * folders the other way round get the same names, and each file the same room path.
+     */
+    fun testTheNamesDoNotFollowTheOrderTheIdeListsTheRoots() {
+        val scratch = Files.createDirectories(Files.createTempDirectory("selvage-name-order"))
+        val earlier = Files.createDirectories(scratch.resolve("a/app"))
+        val later = Files.createDirectories(scratch.resolve("b/app"))
+        Files.writeString(earlier.resolve("main.kt"), "the earlier app\n")
+        Files.writeString(later.resolve("main.kt"), "the later app\n")
+        val laterFile =
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(later)
+                ?: throw AssertionError("the folder $later did not appear in the VFS")
+        try {
+            // The IDE holds `b/app` first, which is the other way round from the case above and from
+            // the real paths: the real path decides, so `a/app` keeps the bare name either way.
+            val roots = rootsListingFirst(laterFile, earlier)
+            assertEquals(mapOf(earlier to "app", later to "app-2"), roots.associate { it.path to it.name })
+            val folder = GrantFolder(roots)
+            assertEquals(GrantFolder.Read.Text("the earlier app\n"), folder.read("app/main.kt"))
+            assertEquals(GrantFolder.Read.Text("the later app\n"), folder.read("app-2/main.kt"))
+        } finally {
+            scratch.toFile().deleteRecursively()
+        }
+    }
+
+    /**
+     * One real folder the IDE lists twice, once by a link and once by the folder itself, is one
+     * root, and the name the room gives it is the same whichever of the two the IDE reports first.
+     */
+    fun testOneFolderListedTwiceIsNamedTheSameWhicheverSpellingTheIdeReportsFirst() {
+        val scratch = Files.createDirectories(Files.createTempDirectory("selvage-two-spellings"))
+        val real = Files.createDirectories(scratch.resolve("real/app"))
+        Files.writeString(real.resolve("main.kt"), "the app\n")
+        val link = scratch.resolve("link-app")
+        Files.createSymbolicLink(link, real)
+        val local = LocalFileSystem.getInstance()
+        val realFile =
+            local.refreshAndFindFileByNioFile(real)
+                ?: throw AssertionError("the folder $real did not appear in the VFS")
+        try {
+            val realFirst = rootsListingFirst(realFile, link)
+            val linkFile =
+                local.refreshAndFindFileByNioFile(link)
+                    ?: throw AssertionError("the link $link did not appear in the VFS")
+            val linkFirst = rootsListingFirst(linkFile, real)
+            assertEquals("one real folder is one root", 1, realFirst.size)
+            assertEquals(
+                realFirst.map { it.path to it.name },
+                linkFirst.map { it.path to it.name },
+            )
+        } finally {
+            scratch.toFile().deleteRecursively()
+        }
+    }
+
+    /** The roots hosted for a module whose first content root is [first] and whose second is [second]. */
+    private fun rootsListingFirst(
+        first: VirtualFile,
+        second: Path,
+    ): List<GrantFolder.Root> {
+        ModuleRootModificationUtil.updateModel(module) { model ->
+            model.contentEntries.toList().forEach { model.removeContentEntry(it) }
+            model.addContentEntry(first)
+        }
+        ModuleRootModificationUtil.addContentRoot(module, second.toString())
+        return SelvageService.get().hostRoots(project)
     }
 }
