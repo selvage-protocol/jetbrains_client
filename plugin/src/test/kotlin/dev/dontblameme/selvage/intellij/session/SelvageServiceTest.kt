@@ -1,8 +1,11 @@
 package dev.dontblameme.selvage.intellij.session
 
+import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.dontblameme.selvage.engine.ErrorSink
 import dev.dontblameme.selvage.intellij.TestIde
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -41,6 +44,35 @@ class SelvageServiceTest : BasePlatformTestCase() {
         } finally {
             service.errorSink = sink
             service.openMirror = open
+        }
+    }
+
+    /**
+     * A project's folders are its content roots: a project with one shares that folder, and one with
+     * several shares every one of them, each under its own name. The names are what a session with
+     * more than one root qualifies its paths with.
+     */
+    fun testHostingSharesEveryContentRootOfTheProject() {
+        val base = Files.createDirectories(Path.of(project.basePath!!))
+        val second = Files.createDirectories(Files.createTempDirectory("selvage-second-root"))
+        val baseFile =
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(base)
+                ?: throw AssertionError("the base folder $base did not appear in the VFS")
+        try {
+            ModuleRootModificationUtil.updateModel(module) { model ->
+                model.contentEntries.toList().forEach { model.removeContentEntry(it) }
+                model.addContentEntry(baseFile)
+            }
+            val alone = SelvageService.get().hostRoots(project)
+            assertEquals(listOf(base), alone.map { it.path })
+            assertEquals(listOf(base.fileName.toString()), alone.map { it.name })
+
+            ModuleRootModificationUtil.addContentRoot(module, second.toString())
+            val both = SelvageService.get().hostRoots(project)
+            assertEquals(setOf(base, second), both.map { it.path }.toSet())
+            assertEquals(both.map { it.path.fileName.toString() }, both.map { it.name })
+        } finally {
+            second.toFile().deleteRecursively()
         }
     }
 }

@@ -142,4 +142,88 @@ class GrantFolderTest : TestCase() {
             },
         )
     }
+
+    // --- what a project with several roots shares -------------------------------------------------
+
+    /** A second root, `lib`, beside the `app` root this test's scratch already holds. */
+    private fun severalRoots(): GrantFolder {
+        val other = Files.createDirectories(scratch.resolve("other"))
+        Files.writeString(other.resolve("README.md"), "the other readme\n")
+        Files.createDirectories(other.resolve("nested"))
+        Files.writeString(other.resolve("nested/deep.txt"), "deep\n")
+        Files.writeString(other.resolve("only-in-lib.txt"), "lib only\n")
+        Files.writeString(other.resolve(".gitignore"), "*.log\n")
+        Files.writeString(other.resolve("ignored.log"), "ignored here too\n")
+        Files.createSymbolicLink(other.resolve("escape"), outside)
+        Files.writeString(root.resolve("only-in-app.txt"), "app only\n")
+        return GrantFolder(listOf(GrantFolder.Root(root, "app"), GrantFolder.Root(other, "lib")))
+    }
+
+    private fun refusedBy(
+        folder: GrantFolder,
+        path: String,
+        cause: GrantFolder.Refusal,
+    ) = assertEquals(path, GrantFolder.Read.Refused(cause), folder.read(path))
+
+    /** One root carries a name and does not use it: the listing and the reads are the folder's own. */
+    fun testOneRootListsItsOwnPathsWithNoPrefix() {
+        val one = GrantFolder(listOf(GrantFolder.Root(root, "app")))
+        assertEquals(listOf(".gitignore", "README.md", "bom.txt", "src/main.kt"), one.walk().paths)
+        assertEquals(folder().walk().paths, one.walk().paths)
+        assertEquals(GrantFolder.Read.Text("hello\nworld\n"), one.read("README.md"))
+        assertEquals("src/main.kt", one.roomPathOf(root.resolve("src/main.kt")))
+    }
+
+    /** Two roots are two bounds: each path carries its own root's name, and the bounds on each hold. */
+    fun testTwoRootsAreListedEachUnderItsOwnName() {
+        assertEquals(
+            listOf(
+                "app/.gitignore",
+                "app/README.md",
+                "app/bom.txt",
+                "app/only-in-app.txt",
+                "app/src/main.kt",
+                "lib/.gitignore",
+                "lib/README.md",
+                "lib/nested/deep.txt",
+                "lib/only-in-lib.txt",
+            ),
+            severalRoots().walk().paths,
+        )
+    }
+
+    fun testAPathResolvesToTheRootItsNamePrefixes() {
+        val folder = severalRoots()
+        assertEquals(GrantFolder.Read.Text("hello\nworld\n"), folder.read("app/README.md"))
+        assertEquals(GrantFolder.Read.Text("the other readme\n"), folder.read("lib/README.md"))
+        assertEquals(root.resolve("src").resolve("main.kt"), folder.plainFile("app/src/main.kt"))
+        assertEquals(scratch.resolve("other/nested/deep.txt"), folder.plainFile("lib/nested/deep.txt"))
+        refusedBy(folder, "lib/only-in-app.txt", GrantFolder.Refusal.MISSING)
+        refusedBy(folder, "app/nested/deep.txt", GrantFolder.Refusal.MISSING)
+        refusedBy(folder, "lib/ignored.log", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "README.md", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "nope/README.md", GrantFolder.Refusal.NOT_GRANTED)
+    }
+
+    fun testAPathThatEscapesItsRootIsRefused() {
+        val folder = severalRoots()
+        refusedBy(folder, "app/../outside/secret.txt", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "../outside/secret.txt", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "lib/../../outside/secret.txt", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "/etc/passwd", GrantFolder.Refusal.NOT_GRANTED)
+        refusedBy(folder, "lib/escape/secret.txt", GrantFolder.Refusal.NOT_A_FILE)
+        assertNull(folder.plainFile("app/../outside/secret.txt"))
+        assertNull(folder.plainFile("lib/escape/secret.txt"))
+        assertNull(folder.local("app/../outside/secret.txt"))
+    }
+
+    /** A window's own file is shared under the root that holds it, and under no other root's name. */
+    fun testAFileOfTheHostsMapsToTheRootItsUnder() {
+        val folder = severalRoots()
+        assertEquals("app/src/main.kt", folder.roomPathOf(root.resolve("src/main.kt")))
+        assertEquals("lib/nested/deep.txt", folder.roomPathOf(scratch.resolve("other/nested/deep.txt")))
+        assertNull(folder.roomPathOf(outside.resolve("secret.txt")))
+        assertNull(folder.roomPathOf(root))
+        assertEquals("src/main.kt", folder().roomPathOf(root.resolve("src/main.kt")))
+    }
 }
