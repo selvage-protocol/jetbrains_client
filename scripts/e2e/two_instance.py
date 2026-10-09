@@ -7,8 +7,10 @@ open a file, edit both ways, see each other's caret, open a granted path the hos
 rename, follow (landing on its first move, into a tab behind another and into a file the guest
 has not opened), leave, rejoin, the host's leave ending the room, and the host going away until
 the room ends. The TypeScript engine the other clients share takes part twice: as a third
-participant in the IDE's room, and as a host the IDE joins. A host coming back is not driven:
-neither engine reclaims a hosting session after a drop.
+participant in the IDE's room, and as a host the IDE joins. A host coming back inside the room's
+grace is not driven here: it needs an op in the never-shipped driver that cuts one IDE's socket
+rather than killing the IDE, and the Kotlin engine's return is driven against a real `selvaged`
+by the plugin's own live test instead. The TypeScript engine reclaims no hosting session at all.
 
 Every spawn is bounded and killed on the way out, every wait polls a predicate against a
 deadline and reports what it last saw, and a watchdog bounds the whole run.

@@ -97,6 +97,7 @@ Each of these is the editor's business under `AGENTS.md` §3; none removes a com
 | Status bar icons and the host-away background | Codicons, a warning background | Plain text | Presentation. |
 | A peer's caret hover | `<name> · <role>` in the caret's hover | The same words on the error stripe mark and the gutter badge | Where this editor shows a hover for a range. |
 | A failed save | The save's answer and its cause | A read-only file, a save the IDE refused, or one it held back is said; a write the IDE finishes in the background and that fails later is reported by the IDE's own notification | This platform writes files asynchronously and keeps the failure to itself. |
+| A hosting window that loses its connection | The session ends: `this client cannot resume a hosting session, so it will not reconnect.` | The session detaches, retries on the room's own URL and comes back inside the room's grace; a retry that gives up ends it with the guest's sentence | `§9.1` lets the connection that holds the host key resume by publishing a state above the room's edition, which the engine does; VS Code's keeps no host store and ends its hosting session instead. |
 
 ## Against the VS Code client, row by row
 
@@ -155,7 +156,7 @@ because of its own editor, or Neovim alone, is marked so.
 | Live rename refused | `the server refused the display name …` | Same | Same |
 | Apply refused, divergence | Error, warning | Same | Same |
 | Save failed | Error, with a cause when there is one | Same, for the failures this IDE reports synchronously | Same words; see the divergence above |
-| Disconnected | Two sentences by role | Same | Same |
+| Disconnected | `it could not be re-established` for a guest, `this client cannot resume a hosting session` for a host | `it could not be re-established`, for either | Here a host reconnects too (`§9.1`), so its end is a retry that gave up and says what the guest's does |
 | Not in the room, opened and saved | Two warnings, once per path | Same | Same (the save added in this stage) |
 | Unfetched file | Warning `… is still empty …` | Same | Same |
 | Mirror write failed | One and many | Same | Same (added in this stage) |
@@ -177,8 +178,8 @@ because of its own editor, or Neovim alone, is marked so.
 | Open: one, several, failure | As §3.4 | Same | Same |
 | Name: unset, bound, empty, live change, confirmation, refusal | As §3.5 | Same | Same |
 | People: no session, alone, rows, order | As §3.6 | Same | Same |
-| Lifecycle: host away, back, room gone, disconnected | As §3.7 | Same | Same |
-| Lifecycle: reconnecting | `Reconnecting…`, tooltip `The connection dropped; trying to rejoin the room.` | Same | Same (tooltip added in this stage) |
+| Lifecycle: host away, back, room gone, disconnected | As §3.7 | Same, except a hosting window's own drop: it reads `Reconnecting…` and comes back, or ends with the guest's sentence | Same, less the host's end — a host here reconnects (`§9.1`), so its drop is not the end of the session |
+| Lifecycle: reconnecting | `Reconnecting…`, tooltip `The connection dropped; trying to rejoin the room.` | Same, in a guest's window and in a host's | Same (tooltip added in this stage); a hosting window reads it too, since a host reconnects |
 
 ### Configuration (§4)
 

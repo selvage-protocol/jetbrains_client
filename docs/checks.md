@@ -43,7 +43,7 @@ and asserts that a bump writes the build's version and the client identity and n
   a viewer's read-only documents, saves and failed saves), `CommandsTest` (the commands with no
   session), and `LiveSessionTest`, which runs against a real `selvaged` with `-Pselvage.live`:
   hosting, joining, edits and carets both ways, follow, a viewer, a guest's notices, people lists
-  that follow the room, and a guest whose socket is cut and reconnects.
+  that follow the room, and a socket cut under a guest and under a host, each of which returns.
 
 ## The two-IDE end-to-end test
 

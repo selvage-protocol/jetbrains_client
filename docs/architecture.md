@@ -4,8 +4,9 @@ Two Gradle projects:
 
 - `engine/`: the protocol in Kotlin, with no IDE dependency. It speaks the `selvage/2` sealed
   envelope over a WebSocket, keeps the room's documents as a Yjs-compatible CRDT, and runs a host's
-  or a guest's session, including a guest's reconnect. Its tests replay the specification's vectors
-  and run against real `yjs`, a real `selvaged` and the TypeScript engine the other clients share.
+  or a guest's session, including a host's return and a guest's reconnect after a dropped socket.
+  Its tests replay the specification's vectors and run against real `yjs`, a real `selvaged` and
+  the TypeScript engine the other clients share.
 - `plugin/`: the IntelliJ Platform plugin. It depends on `engine` and on
   `com.intellij.modules.platform` only, so it installs into any IDE on that platform.
 
