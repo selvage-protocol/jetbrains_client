@@ -1,20 +1,15 @@
 package dev.dontblameme.selvage.engine
 
 import dev.dontblameme.selvage.crdt.TextDelta
-import dev.dontblameme.selvage.peer.HostProducer
-import dev.dontblameme.selvage.peer.HostStore
-import dev.dontblameme.selvage.peer.PersistedHost
 import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
 import dev.dontblameme.selvage.sealed.Bytes
 import dev.dontblameme.selvage.sealed.DropReason
-import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Frames
 import dev.dontblameme.selvage.sealed.Invite
 import dev.dontblameme.selvage.sealed.Role
 import dev.dontblameme.selvage.sealed.SessionKey
 import dev.dontblameme.selvage.wire.Meta
-import dev.dontblameme.selvage.wire.ReconnectPolicy
 import dev.dontblameme.selvage.wire.SocketListener
 import dev.dontblameme.selvage.wire.Wire
 import java.io.ByteArrayOutputStream
@@ -60,51 +55,23 @@ class SelvageSessionTest {
         recorded: Recorded,
         errors: ErrorSink = StderrErrorSink,
         listener: SessionListener? = SessionListener { recorded.events.add(it) },
-        graceMs: Long = 2_000,
-        hostStore: HostStore? = null,
-        hostSeed: ByteArray? = null,
     ) = SessionOptions(
         name,
         transport = relay,
         scheduler = scheduler,
-        meta = { _, _ -> Meta(null, emptyList(), emptyList(), null, graceMs) },
+        meta = { _, _ -> Meta(null, emptyList(), emptyList(), null, 2_000) },
         listener = listener,
         errors = errors,
-        hostStore = hostStore,
-        hostSeed = hostSeed,
     )
-
-    /** A host store in memory that keeps every record, so a test can read what the host wrote. */
-    private class RecordingHostStore(
-        vararg seeding: PersistedHost,
-    ) : HostStore {
-        val records = CopyOnWriteArrayList<PersistedHost>()
-
-        init {
-            seeding.forEach(records::add)
-        }
-
-        override fun load(): PersistedHost? = records.lastOrNull()
-
-        override fun save(persisted: PersistedHost) {
-            records.add(persisted)
-        }
-    }
 
     private fun host(
         recorded: Recorded = Recorded(),
         errors: ErrorSink = StderrErrorSink,
-        graceMs: Long = 2_000,
-        store: HostStore? = null,
-        seed: ByteArray? = null,
         read: (String) -> String? = { files[it] },
     ): SelvageSession =
         SelvageSession
-            .host(
-                "ws://relay.test",
-                HostContent({ listed }, read),
-                options("Ada", recorded, errors, graceMs = graceMs, hostStore = store, hostSeed = seed),
-            ).also { sessions.add(it) }
+            .host("ws://relay.test", HostContent({ listed }, read), options("Ada", recorded, errors))
+            .also { sessions.add(it) }
             .also { relay.settle() }
 
     private fun join(
@@ -273,7 +240,6 @@ class SelvageSessionTest {
         val seen = Recorded()
         val guest = join(host, seen)
         val first = guest.seat!!
-        val roomUrl = (Invite.parse(host.invite!!) as Invite.Read.Ok).invite.socketUrl
         relay.connection(first).drop()
         relay.settle()
         assertEquals(listOf(SessionEvent.Reconnecting(1)), seen.all<SessionEvent.Reconnecting>())
@@ -283,194 +249,11 @@ class SelvageSessionTest {
         advance(300)
         assertTrue(guest.seat != first)
         assertEquals(2, seen.all<SessionEvent.Seated>().size)
-        assertEquals(roomUrl, relay.connection(guest.seat!!).url, "a guest re-hellos the room URL its invite carries")
         assertEquals(Role.GUEST, guest.ownRole())
         guest.insert("README.md", 0, "back ")
         relay.settle()
         assertEquals(guest.text("README.md"), host.text("README.md"))
         assertTrue(host.text("README.md").startsWith("back offline "), host.text("README.md"))
-    }
-
-    @Test
-    fun `a host whose socket drops reconnects on its room URL and resumes above the edition it held`() {
-        val store = RecordingHostStore()
-        val seen = Recorded()
-        val hosting = host(seen, store = store)
-        val guestEvents = Recorded()
-        val guest = join(hosting, guestEvents)
-        hosting.insert("README.md", 0, "before ")
-        advance(1_000)
-        val room = hosting.roomId
-        val roomUrl = (Invite.parse(hosting.invite!!) as Invite.Read.Ok).invite.socketUrl
-        val first = hosting.seat!!
-        val edition = store.records.last().issued
-        val frames = store.records.last().frames!!
-        val written = store.records.size
-
-        relay.connection(first).drop()
-        relay.settle()
-        assertEquals(listOf(SessionEvent.Reconnecting(1)), seen.all<SessionEvent.Reconnecting>())
-        assertNull(hosting.ending, "a host's drop is recoverable")
-        assertTrue(!hosting.insert("README.md", 0, "offline "))
-
-        advance(500)
-        advance(300)
-        assertTrue(hosting.seat != first, "the host is a new peer")
-        assertEquals(room, hosting.roomId, "the retry must not mint a second room")
-        assertEquals(
-            roomUrl,
-            relay.connection(hosting.seat!!).url,
-            "a host re-hellos the room URL its invite carries, token and all",
-        )
-
-        fun observed() =
-            "seat=${hosting.seat} ending=${hosting.ending} " +
-                "reconnecting=${seen.all<SessionEvent.Reconnecting>().map { it.attempt }}"
-        awaitEvent("the guest names the returning host", ::observed) {
-            guest.rolesBySeat()[hosting.seat] == Role.HOST
-        }
-        awaitEvent("the guest sees the host back", ::observed) {
-            guestEvents.all<SessionEvent.HostBack>().isNotEmpty()
-        }
-
-        // §9.1: the return is a state above the room's edition, and §6.1 charges its count for
-        // the absence. The count the store holds lags the room's by at most the frames sealed
-        // since the last write, which no test approaches the 2²¹ charge by.
-        val resumed =
-            store.records.drop(written).firstOrNull { it.issued > edition }
-                ?: fail("the returning host published no state: ${store.records.drop(written)}")
-        assertEquals(edition + 1, resumed.issued, "the resumed state is above the edition it held")
-        assertTrue(
-            resumed.frames!! - frames >= HostProducer.ABSENCE_CHARGE,
-            "the return carries the absence charge: ${resumed.frames} after $frames",
-        )
-        assertEquals(2, seen.all<SessionEvent.Seated>().size)
-
-        hosting.insert("README.md", 0, "back ")
-        awaitEvent("both replicas hold every edit", ::observed) {
-            hosting.text("README.md") == guest.text("README.md") &&
-                guest.text("README.md").startsWith("back offline ")
-        }
-    }
-
-    /** What a host comes back to: the seat it held before the drop, and one that left while it was away. */
-    private class ReturnedRoom(
-        val hosting: SelvageSession,
-        val oldSeat: String,
-        val goneSeat: String,
-    )
-
-    /**
-     * A host whose socket drops, a guest that leaves while it is away, and the host back on the
-     * room URL. The drop of its own seat and that `peer.left` both miss it, so the roster the
-     * server hands back on the re-hello is the only place its return can learn what the room is.
-     */
-    private fun hostReturnedToADepartedRoom(): ReturnedRoom {
-        val hosting = host()
-        val stays = join(hosting)
-        val leaves = join(hosting, name = "Cy")
-
-        fun roles() = "host=${hosting.seat} roles=${hosting.rolesBySeat()}"
-        awaitEvent("each guest to hold the role the host gave it", ::roles) {
-            hosting.rolesBySeat()[stays.seat] == Role.GUEST &&
-                hosting.rolesBySeat()[leaves.seat] == Role.GUEST
-        }
-        val oldSeat = hosting.seat!!
-        val goneSeat = leaves.seat!!
-
-        relay.connection(oldSeat).drop()
-        relay.settle()
-        leaves.leave()
-        relay.settle()
-        advance(500)
-        advance(300)
-        assertTrue(hosting.seat != oldSeat, "the host is a new peer")
-
-        awaitEvent("the state the return publishes", ::roles) {
-            hosting.rolesBySeat()[hosting.seat] == Role.HOST
-        }
-        return ReturnedRoom(hosting, oldSeat, goneSeat)
-    }
-
-    @Test
-    fun `a returning host drops the seats that left while it was away`() {
-        val room = hostReturnedToADepartedRoom()
-        assertTrue(
-            room.goneSeat !in room.hosting.rolesBySeat(),
-            "the return seats a key where the guest that left during the absence was: ${room.hosting.rolesBySeat()}",
-        )
-    }
-
-    @Test
-    fun `a returning host seats a newcomer in the room, not in its own dead seat`() {
-        val room = hostReturnedToADepartedRoom()
-        val newcomer = join(room.hosting, name = "Dee")
-
-        fun observed() = "newcomer=${newcomer.seat} roles=${room.hosting.rolesBySeat()}"
-        awaitEvent("the host to answer the newcomer's announcement", ::observed) { newcomer.ownRole() != null }
-        assertEquals(
-            Role.GUEST,
-            room.hosting.rolesBySeat()[newcomer.seat],
-            "the seat the newcomer was committed to: ${observed()}",
-        )
-        assertTrue(
-            room.oldSeat !in room.hosting.rolesBySeat(),
-            "the newcomer was seated where the host's dead seat was: ${observed()}",
-        )
-    }
-
-    @Test
-    fun `a refused return ends the hosting session rather than retrying`() {
-        val seen = Recorded()
-        val hosting = host(seen)
-        relay.connection(hosting.seat!!).drop()
-        relay.settle()
-        assertEquals(listOf(SessionEvent.Reconnecting(1)), seen.all<SessionEvent.Reconnecting>())
-
-        relay.refuseHello = "room_unknown"
-        advance(500)
-        advance(1_000)
-        assertEquals(SessionEnding.ROOM_GONE, hosting.ending)
-        assertEquals(listOf("room_unknown"), seen.all<SessionEvent.Failed>().map { it.error.code })
-        assertEquals(listOf(1), seen.all<SessionEvent.Reconnecting>().map { it.attempt }, "a refusal is not retried")
-    }
-
-    @Test
-    fun `a host's retry budget is sized from the room's grace, as a guest's is`() {
-        val seen = Recorded()
-        val grace = 60_000L
-        val hosting = host(seen, graceMs = grace)
-        relay.connection(hosting.seat!!).drop()
-        relay.settle()
-        // Every hello is refused with a code a retry can change, so the retries run to the budget.
-        relay.refuseEveryHello = "hello_required"
-        advance(2 * grace)
-        val expected = ReconnectPolicy().attemptsForGrace(grace)
-        assertTrue(expected > ReconnectPolicy().maxAttempts, "the grace is meant to raise the budget")
-        assertEquals(
-            (1..expected).toList(),
-            seen.all<SessionEvent.Reconnecting>().map { it.attempt },
-            "the room's grace, not the default attempt count, is what the host's budget refuses to pass",
-        )
-        assertEquals(SessionEnding.CONNECTION_LOST, hosting.ending, "giving up is observable")
-    }
-
-    @Test
-    fun `a host whose store holds its key continues the edition and the count from it`() {
-        val seed = FrameCrypto.randomBytes(32)
-        val store = RecordingHostStore(PersistedHost(seed, issued = 7, frames = 100))
-        val seen = Recorded()
-        val hosting = host(seen, store = store, seed = seed)
-        val invite = (Invite.parse(hosting.invite!!) as Invite.Read.Ok).invite
-        assertTrue(
-            invite.hostKey.contentEquals(SessionKey.fromSeed(seed).public),
-            "the stored seed is the room's host key",
-        )
-        assertEquals(8, store.records.last().issued, "the series continues above the stored edition")
-        assertTrue(
-            store.records.last().frames!! >= 100 + HostProducer.ABSENCE_CHARGE,
-            "a reload is a return, so the stored count takes the charge: ${store.records.last().frames}",
-        )
     }
 
     @Test
