@@ -28,10 +28,11 @@ dropped, a rename is redrawn, and the list closes when nobody is left to pick.
 
 The project's folders are the grant: one folder means the room's paths are that folder's own, and two
 or more put each folder's name in front of its paths, so the same relative path in two folders is two
-room paths. A folder inside another is shared by the folder that holds it, once. What a host leaves
-out is the VS Code client's list, which includes `.idea`, and the folders' own ignore files narrow it
-further. A file a peer asks for is read from disk with every step of its path checked, so a link out
-of its folder is refused.
+room paths. Two folders of the same name are told apart by a number, `shared` and `shared-2`, so
+neither is left behind the other's prefix. A folder inside another is shared by the folder that holds
+it, once. What a host leaves out is the VS Code client's list, which includes `.idea`, and the
+folders' own ignore files narrow it further. A file a peer asks for is read from disk with every step
+of its path checked, so a link out of its folder is refused.
 
 ## Join a session from an invite link
 
