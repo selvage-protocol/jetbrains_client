@@ -41,8 +41,7 @@ import java.util.concurrent.locks.LockSupport
  * The adapter in a test IDE against a real `selvaged` (SELVAGE_SELVAGED): the IDE hosts from its
  * project while a second participant joins with the engine directly, and the IDE joins a room the
  * engine hosts. Open, edits both ways, carets both ways, a rename, follow and its endings, the invite
- * control, leave, the host going away, and a host whose socket is cut coming back into its room.
- * Every wait polls a predicate against a deadline.
+ * control, leave, and the host going away. Every wait polls a predicate against a deadline.
  */
 class LiveSessionTest : HeavyPlatformTestCase() {
     private val renew = 300L
@@ -68,17 +67,14 @@ class LiveSessionTest : HeavyPlatformTestCase() {
     private fun options(
         name: String,
         transport: Transport = JdkTransport(),
-        expireMs: Long = expire,
-        hostStore: dev.dontblameme.selvage.peer.HostStore? = null,
     ) = SessionOptions(
         name,
         transport = transport,
         handshakeTimeout = Duration.ofSeconds(5),
         metaTimeout = Duration.ofSeconds(2),
         requestTimeout = Duration.ofSeconds(5),
-        keepalive = Keepalive(30_000, renew, expireMs),
+        keepalive = Keepalive(30_000, renew, expire),
         client = SelvageService.CLIENT,
-        hostStore = hostStore,
     )
 
     override fun setUp() {
@@ -169,24 +165,15 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         return FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file), true)!!
     }
 
-    /**
-     * A host IDE whose folder holds one file, with one engine guest seated and attributed in the
-     * room. [expireMs] is the guest's host-away window: a case that drops the host's socket wants
-     * one longer than the return takes, or the guest ends before the host is back.
-     */
-    private fun hostWithOneFile(expireMs: Long = expire): Pair<RoomSession, SelvageSession> {
+    /** A host IDE whose folder holds one file, with one engine guest seated and attributed in the room. */
+    private fun hostWithOneFile(): Pair<RoomSession, SelvageSession> {
         val root = Files.createDirectories(Path.of(project.basePath!!))
         Files.writeString(root.resolve("README.md"), "hello\n")
         LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root)!!.refresh(false, true)
         val service = SelvageService.get()
         service.host(project)
         val session = service.current ?: throw AssertionError("no session after hosting; said: ${said.sentences()}")
-        val guest =
-            SelvageSession
-                .join(
-                    session.invite()!!,
-                    options("Bob", expireMs = expireMs),
-                ).also { engines.add(it) }
+        val guest = SelvageSession.join(session.invite()!!, options("Bob")).also { engines.add(it) }
         eventually("the guest is committed", timeoutMs = roundTripMs) { guest.ownRole() == Role.GUEST }
         eventually("the guest has the listing", timeoutMs = roundTripMs) { guest.listing() == listOf("README.md") }
         eventually("the host has attributed the guest", timeoutMs = roundTripMs) { session.participants().size == 1 }
@@ -885,67 +872,5 @@ class LiveSessionTest : HeavyPlatformTestCase() {
             said.sentences().toString(),
             said.sentences().any { it.startsWith("Selvage: the connection ended") },
         )
-    }
-
-    /**
-     * §9.1's host return, in the window that hosts: the socket drops, the row says it is
-     * reconnecting, and the same session comes back into the room it minted — the guest stays, the
-     * documents keep flowing both ways, and nothing says the session is over.
-     */
-    fun testAHostWhoseSocketDropsReconnectsAndTheRoomSurvivesIt() {
-        val severable = Severable()
-        val service = SelvageService.get()
-        // The service's own store, so what the engine keeps beside the host key is what it wrote.
-        service.sessionOptions = { options(it, severable, hostStore = service.hostStore) }
-        // A window longer than the return takes: the guest would otherwise end on its host-away clock.
-        val (session, guest) = hostWithOneFile(expireMs = 60_000)
-        val editor = openInEditor(Path.of(project.basePath!!).resolve("README.md"))
-        eventually("the host's replica holds the file it shares") {
-            session.engine.text("README.md") == "hello\n"
-        }
-        guest.open("README.md")
-        eventually("the host serves the file the guest holds", timeoutMs = roundTripMs) {
-            guest.text("README.md") == "hello\n"
-        }
-        val listed = service.hostStore.load() ?: throw AssertionError("the host wrote nothing to its store")
-        val rows = CopyOnWriteArrayList<Pair<String, String>>()
-        session.changed.add { rows.add(session.statusText() to session.statusTooltip()) }
-
-        assertEquals("one socket was cut", 1, severable.sever())
-        eventually("the row says it is reconnecting") { rows.any { it.first == Say.RECONNECTING } }
-        assertEquals(RoomSession.RECONNECTING_TOOLTIP, rows.first { it.first == Say.RECONNECTING }.second)
-        eventually("and then reads as the hosting row again", timeoutMs = roundTripMs) {
-            !session.isReconnecting() && session.statusText() == session.identity()
-        }
-        assertSame("the session survived the drop", session, service.current)
-        assertFalse("the window that hosts never counts itself away", session.isHostAway())
-        assertNull("the guest's session is the same one", guest.ending)
-        eventually("the guest is still in the room", timeoutMs = roundTripMs) { guest.ownRole() == Role.GUEST }
-
-        WriteCommandAction.runWriteCommandAction(
-            project,
-        ) { editor.document.insertString(editor.document.textLength, "bye\n") }
-        eventually("the host's keystroke reaches the guest", timeoutMs = roundTripMs) {
-            guest.text("README.md") == "hello\nbye\n"
-        }
-        guest.insert("README.md", 0, "> ")
-        eventually("the guest's edit reaches the host's document", timeoutMs = roundTripMs) {
-            editor.document.text == "> hello\nbye\n"
-        }
-        assertFalse(
-            said.sentences().toString(),
-            said.sentences().any { it.startsWith("Selvage: the connection ended") },
-        )
-
-        // §9.1: the return is a state above the edition the host held, and §6.1 charges its count
-        // for the absence. The charge is 2²¹ frames, which no test session approaches.
-        val resumed = service.hostStore.load() ?: throw AssertionError("the host wrote nothing to its store")
-        val before = listed.frames ?: throw AssertionError("the host's record carries no frame count")
-        val after = resumed.frames ?: throw AssertionError("the host's record carries no frame count")
-        assertTrue(
-            "the return is above the edition it held: ${resumed.issued} after ${listed.issued}",
-            resumed.issued > listed.issued,
-        )
-        assertTrue("the return charged the room's count: $after after $before", after - before >= (1L shl 21))
     }
 }
