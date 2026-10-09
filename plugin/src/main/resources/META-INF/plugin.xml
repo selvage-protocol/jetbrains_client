@@ -24,6 +24,12 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.4.0</p>
+    <ul>
+      <li>Hosting shares every folder of the project, instead of only the folder the window was opened on.</li>
+      <li>With more than one folder shared, each path in the room carries the name of the folder it is in, and two folders of the same name are told apart by a number.</li>
+      <li>A folder inside another shared folder is shared once, by the outermost folder that holds it.</li>
+    </ul>
     <p>0.3.1</p>
     <ul>
       <li>A peer's selection is drawn as soon as their document is open in this window, instead of at their next move.</li>
