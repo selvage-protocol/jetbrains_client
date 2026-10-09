@@ -436,7 +436,7 @@ class PeerSessionTest {
         val first = guest.sessionKey.spelling
         room.leave("p-guest")
         guest.detach()
-        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), guest.awarenessClientId)
+        guest.reseat(room.clock, "p-guest-2", listOf("p-host", "p-guest-2"), guest.awarenessClientId)
         for (other in room.seats.values) other.seatJoined(room.clock, "p-guest-2")
         room.seats["p-guest-2"] = guest
         room.advance(0)
@@ -461,7 +461,7 @@ class PeerSessionTest {
         val before = guest.awarenessClientId
         room.leave("p-guest")
         guest.detach()
-        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), if (before == 7L) 8L else 7L)
+        guest.reseat(room.clock, "p-guest-2", listOf("p-host", "p-guest-2"), if (before == 7L) 8L else 7L)
         assertEquals(listOf(room.host.awarenessClientId), guest.cursors().map { it.clientId })
         assertTrue(guest.awarenessClientId != before)
     }
@@ -506,7 +506,7 @@ class PeerSessionTest {
         val after = if (before == 7L) 8L else 7L
         room.leave("p-guest")
         guest.detach()
-        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), after)
+        guest.reseat(room.clock, "p-guest-2", listOf("p-host", "p-guest-2"), after)
         for (other in room.seats.values) other.seatJoined(room.clock, "p-guest-2")
         room.seats["p-guest-2"] = guest
         room.advance(0)
@@ -682,7 +682,7 @@ class PeerSessionTest {
 
         guest.setCursor("README.md")
         guest.detach()
-        guest.reseat("p-guest-2", listOf("p-host", "p-guest-2"), ROTATED)
+        guest.reseat(room.clock, "p-guest-2", listOf("p-host", "p-guest-2"), ROTATED)
         // The pump that follows a re-seat: the renewal republishes `localState` under the fresh id,
         // and the gate, still shut, holds it again rather than dropping it.
         guest.tick(2)

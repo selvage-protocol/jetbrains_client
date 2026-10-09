@@ -38,7 +38,7 @@ class FakeRelay : Transport {
     }
 
     inner class Conn(
-        private val url: String,
+        val url: String,
         val listener: SocketListener,
     ) : WireSocket {
         var peerId: String? = null
@@ -109,7 +109,7 @@ class FakeRelay : Transport {
                 gone(code, closeHelloReason)
                 return
             }
-            refuseHello?.let { code ->
+            (refuseHello ?: refuseEveryHello)?.let { code ->
                 refuseHello = null
                 event("session.error", JsonValue.Obj.of("code" to code.json(), "message" to "refused".json()))
                 return
@@ -211,6 +211,10 @@ class FakeRelay : Transport {
     /** The next `session.hello` is answered with this `session.error` code, the socket left open. */
     @Volatile
     var refuseHello: String? = null
+
+    /** Every `session.hello` is answered with this code while it is set: a retry that never lands. */
+    @Volatile
+    var refuseEveryHello: String? = null
 
     /**
      * The next `session.hello` is closed with this code and [closeHelloReason] before the seat, the
