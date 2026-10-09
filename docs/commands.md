@@ -81,9 +81,16 @@ A guest following the host, in the window the room opened on its copy of the fil
 A viewer's documents are read-only in the editor, and `you are a viewer in this room, so its
 documents are read-only.` is said once, as a warning. The room's edits still reach them.
 
+## While you edit
+
+A peer's name, caret and selection are drawn where they are, and only the primary caret is shared:
+extra carets stay yours. While a modal dialog is open in your IDE the room's changes to your
+documents wait and land when it closes, because the platform does not allow a document write under
+a modal dialog; your own typing in another window still goes out.
+
 ## Where this client differs from the VS Code client, and why
 
-Each of these is the editor's business under `AGENTS.md` §3; none removes a command.
+Each of these is this editor's own shape; none removes a command.
 
 | What | VS Code | Here | Why |
 |---|---|---|---|
@@ -92,109 +99,7 @@ Each of these is the editor's business under `AGENTS.md` §3; none removes a com
 | Workspace settings left out of the copy | `.vscode/**`, `*.code-workspace` | `.idea/**`, `.run/**`, `*.run.xml`, `*.iml`, `*.ipr`, `*.iws`, said in this client's own sentence | Those are the files this IDE would apply rather than show. |
 | A host with several folders | Paths qualified `<folder>/<path>` | One folder, the project's base | A project has one base directory. |
 | Clicking the session's name | The people list | The Selvage menu, with the people list in it and in the tool window | The menu reaches all twelve commands from the status bar, which has no palette beside it. |
-| A viewer's keystroke | Put back to the room's text | Refused by the editor: the document is read-only | The IDE can mark one document read-only, as Neovim's `modifiable = false`; VS Code cannot, so it puts the text back. `§13.9` allows either. |
-| List placeholders | A line above the rows | The footer of the list | Where an IntelliJ list keeps its hint. |
-| Status bar icons and the host-away background | Codicons, a warning background | Plain text | Presentation. |
-| A peer's caret hover | `<name> · <role>` in the caret's hover | The same words on the error stripe mark and the gutter badge | Where this editor shows a hover for a range. |
+| A viewer's keystroke | Put back to the room's text | Refused by the editor: the document is read-only | The IDE can mark one document read-only; VS Code cannot, so it puts the text back. |
 | A failed save | The save's answer and its cause | A read-only file, a save the IDE refused, or one it held back is said; a write the IDE finishes in the background and that fails later is reported by the IDE's own notification | This platform writes files asynchronously and keeps the failure to itself. |
-| A hosting window that loses its connection | The session ends: `this client cannot resume a hosting session, so it will not reconnect.` | The session detaches, retries on the room's own URL and comes back inside the room's grace; a retry that gives up ends it with the guest's sentence | `§9.1` lets the connection that holds the host key resume by publishing a state above the room's edition, which the engine does; VS Code's keeps no host store and ends its hosting session instead. |
+| A hosting window that loses its connection | The session ends: `this client cannot resume a hosting session, so it will not reconnect.` | The session detaches, retries on the room's own URL and comes back inside the room's grace; a retry that gives up ends it with the guest's sentence | A dropped socket is not a leave, so the session retries while the room's grace lasts. |
 
-## Against the VS Code client, row by row
-
-The rows of the parity study (`client-command-parity.md` §1 to §5), read against this client.
-"Same" means the same words at the same level, or the same behaviour. A row VS Code alone has
-because of its own editor, or Neovim alone, is marked so.
-
-### Commands (§1)
-
-| Row | VS Code | Here | Status |
-|---|---|---|---|
-| Host | `selvage.host`, `Host a session` | `Selvage.Host`, same title | Same |
-| Join | `selvage.join`, `Join a session from an invite link` | `Selvage.Join`, same title | Same |
-| Copy invite | `selvage.copyInvite`, `Copy the invite link` | `Selvage.CopyInvite`, same title | Same |
-| Open | `selvage.openDocument`, `Open a document from the room` | `Selvage.OpenDocument`, same title | Same |
-| Fetch | `selvage.fetch`, `Download a file from the room` | `Selvage.Fetch`, same title | Same |
-| Leave | `selvage.leave`, `Leave the session` | `Selvage.Leave`, same title | Same |
-| Name | `selvage.displayName`, `Set the name other participants see` | `Selvage.DisplayName`, same title | Same |
-| Server | `selvage.changeServer`, `Change the server` | `Selvage.ChangeServer`, same title | Same |
-| People | `selvage.peers`, `List the room's participants` | `Selvage.Peers`, same title | Same |
-| Go to | `selvage.goToParticipant`, `Go to a participant` | `Selvage.GoToParticipant`, same title | Same |
-| Follow | `selvage.followParticipant`, `Follow a participant` | `Selvage.FollowParticipant`, same title | Same |
-| Stop | `selvage.stopFollowing`, `Stop following` | `Selvage.StopFollowing`, same title | Same |
-| Arguments | Programmatic `*Args` interfaces; the palette asks | No arguments; every command asks | Same for a person; VS Code's programmatic seam has no IntelliJ counterpart a person reaches |
-
-### Strings (§2)
-
-| Row | VS Code | Here | Status |
-|---|---|---|---|
-| Host succeeded, reused address, clipboard refused, no invite | Four sentences, buttons `Copy again`, `Change the server` | Same sentences, levels and buttons | Same |
-| Hosting again | Three sentences | Same | Same |
-| Host while a guest | Modal, `Leave and host` | Dialog, `Leave and host` | Same |
-| Host, no folder | Warning `open a folder first — …` | Same | Same |
-| Join succeeded, room empty | `joined the room…` with `Open a document from the room` | Same | Same |
-| Join while in a session | Two sentences, `Leave and join` | Same | Same |
-| Join replaces the folder | Modal warning | Not asked | Divergence: a new window replaces nothing |
-| Invite copied | `Copied` for 1800 ms | Same | Same |
-| No invite, no session | Two warnings | Same | Same |
-| Open: no session, while hosting, none open | Three sentences | Same | Same |
-| Open picker | Title, placeholder `<n> open in this room` | Title, footer `<n> open in this room` | Same words, IntelliJ's place |
-| Open: path matches none, left the listing | Programmatic path only | No path argument | n/a: no argument here either |
-| Open failed | Error `could not open <path> from the room: …` | Same | Same |
-| Fetch sentences | Session, hosting, empty, consent, progress, failure, done | Same; the progress is the IDE's background task | Same (progress added in this stage) |
-| Fetch picker and whole-listing consent, cap | Row, modal, cap of 100 | Same | Same |
-| Fetch: path matches none, left the listing | Warning, error | Same | Same (left-listing refusal added in this stage) |
-| Leave, leave with no session | Host asked, `left the session.`, `not in a session.` | Same | Same |
-| Display name read, set, prompt, empty, over the bound | VS Code's sentences and validator | Same | Same |
-| Setting write refused | Error | Cannot happen: the IDE's settings store does not fail a write | n/a |
-| Peers list | Title, placeholder `Everyone in the room`, menu per row | Same, footer | Same; refills while open (added in this stage) |
-| Peers: no session, alone | Warning; opens with you | Same | Same |
-| Viewer's notice | Warning, once | Warning, once | Same (was info before this stage) |
-| Following, stopped by you, stopped on its own | `Following <name>`; silent; four info lines | Same | Same |
-| Nothing to go to or follow | Three warnings | Same | Same |
-| Host detached, attached, room gone | Three room lines, countdown | Same | Same |
-| Session error, room full | Error | Same | Same |
-| Live rename refused | `the server refused the display name …` | Same | Same |
-| Apply refused, divergence | Error, warning | Same | Same |
-| Save failed | Error, with a cause when there is one | Same, for the failures this IDE reports synchronously | Same words; see the divergence above |
-| Disconnected | `it could not be re-established` for a guest, `this client cannot resume a hosting session` for a host | `it could not be re-established`, for either | Here a host reconnects too (`§9.1`), so its end is a retry that gave up and says what the guest's does |
-| Not in the room, opened and saved | Two warnings, once per path | Same | Same (the save added in this stage) |
-| Unfetched file | Warning `… is still empty …` | Same | Same |
-| Mirror write failed | One and many | Same | Same (added in this stage) |
-| Server and invite prompts | Titles, prompts, placeholders, validators | Titles, prompts, validators; no placeholder line | Same words; an IntelliJ input dialog has no placeholder |
-| Drawn name clip | 24 code points, `<name> · <role>` hover | Same clip; the hover on the stripe and badge | Same, presentation |
-| Neovim-only rows (not UTF-8, outside the grant, companion problems, nobody to ask) | n/a | n/a | n/a: one process, UTF-16 documents, a dialog is always there |
-
-### Behaviour (§3)
-
-| Row | VS Code | Here | Status |
-|---|---|---|---|
-| Host: already hosting, already a guest, no folder, order, cancel | As §3.1 | Same | Same |
-| Host: connect failure | Error, `Change the server` for a remembered address | Same | Same |
-| Host: blocks | Modal prompts | Modal prompts and progress | Same |
-| Join: while hosting or joined | Asked before the invite | Same | Same |
-| Join: invite input | Empty, validated, then the replace-window modal | Empty, validated | Same, less the modal (see above) |
-| Join: landing | First document once, and a room that was empty lands later | Same | Same |
-| Leave: guard, host leaving, what ends, after a drop | As §3.3 | Same; a guest's window on its copy closes too | Same; the window closing is this client's, since its folder is gone |
-| Open: one, several, failure | As §3.4 | Same | Same |
-| Name: unset, bound, empty, live change, confirmation, refusal | As §3.5 | Same | Same |
-| People: no session, alone, rows, order | As §3.6 | Same | Same |
-| Lifecycle: host away, back, room gone, disconnected | As §3.7 | Same, except a hosting window's own drop: it reads `Reconnecting…` and comes back, or ends with the guest's sentence | Same, less the host's end — a host here reconnects (`§9.1`), so its drop is not the end of the session |
-| Lifecycle: reconnecting | `Reconnecting…`, tooltip `The connection dropped; trying to rejoin the room.` | Same, in a guest's window and in a host's | Same (tooltip added in this stage); a hosting window reads it too, since a host reconnects |
-
-### Configuration (§4)
-
-| Row | VS Code | Here | Status |
-|---|---|---|---|
-| Server URL | `selvage.serverUrl`, then remembered, then a question | Same | Same |
-| Display name | `selvage.displayName`, then remembered, then a question | Same | Same |
-| Auto-save | `selvage.autoSave`, on | Same | Same |
-| Cursor label | `selvage.cursorLabel`, `none` | Same values and default | Same |
-| Open on join | `selvage.openOnJoin`, on | Same | Same |
-| Neovim's indicator, fetch bound, IPC log, load guard | none | none | n/a |
-
-### Sentences (§5)
-
-Every sentence this client says is in `Say` and `Words`, and `VocabularyTest` checks each against
-VS Code's own pin (`vscode_client/test/vocabulary.test.ts`) or this client's short list of its own
-(the project-settings notice). The §5 rows VS Code says, this client says with the same words and
-level; the rows marked Neovim-only are not said here, for the reasons in the Strings table.
