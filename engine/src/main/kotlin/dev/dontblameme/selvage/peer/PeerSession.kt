@@ -519,6 +519,9 @@ class PeerSession(
         producer.countFrames(roomFrames)
         producer.saveFrames()
         producer.seated(seat, session)
+        // The room's roster, not this host's memory of one: the seats that came and went while it
+        // was away never reached it, and the seat it held before the drop is gone with the socket.
+        producer.reseated(roster)
         publishState(clock, HostReason.RETURN)
     }
 

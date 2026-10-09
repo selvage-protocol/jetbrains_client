@@ -104,6 +104,16 @@ class HostProducer(
         addSeat(seat)
     }
 
+    /**
+     * The roster a re-hello hands back, which is the room's and not this host's memory of one: a
+     * seat it does not name is gone, and the role committed to that seat goes with it.
+     */
+    fun reseated(roster: Collection<String>) {
+        this.roster.clear()
+        this.roster.addAll(roster)
+        seats.values.removeIf { it.seat !in this.roster }
+    }
+
     fun seatJoined(seat: String) {
         if (seat == ownSeat) gone = false
         addSeat(seat)
