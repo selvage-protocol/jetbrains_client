@@ -82,10 +82,12 @@ enum class PeerMutation(
     }
 }
 
-/** A host's seed and the paths it grants (§13.2). */
+/** A host's key and the paths it grants (§13.2), and where it keeps its series (§7.1). */
 class HostOptions(
     val hostKey: SessionKey,
     val listing: () -> List<String>,
+    /** Where the key, its `issued` and the room's count are kept; null is a host in memory only. */
+    val store: HostStore? = null,
 )
 
 /** A change the room made to a document: the delta against the text before it. */
@@ -135,7 +137,7 @@ class PeerSession(
         private set
     private var roster: MutableSet<String> = LinkedHashSet(options.roster)
     private val host: HostProducer? =
-        options.host?.let { HostProducer(roomId, frameKey, renew, it.hostKey, it.listing) }
+        options.host?.let { HostProducer(roomId, frameKey, renew, it.hostKey, it.listing, it.store) }
 
     private val doc = Doc()
     private var clockOfLastMove = 0L
@@ -166,7 +168,9 @@ class PeerSession(
     private var handshakenAt: Long? = null
     private var stateIssued: Long? = null
     private var hostAwaySince: Long? = null
-    private var roomFrames = 0L
+
+    /** `CANONICAL.md` §6.1: the room's frame count, which a host continues from its store. */
+    private var roomFrames = host?.roomFrames ?: 0L
     private val unsent = ArrayList<ByteArray>()
     private var heldStateFrame: ByteArray? = null
     private val observed = HashSet<String>()
@@ -424,6 +428,7 @@ class PeerSession(
     fun tick(clock: Long) {
         clockOfLastMove = clock
         expireLeases(clock)
+        host?.flushFrames(clock)
         refreshHostAway(clock, restart = false)
         if (ending != null) return
         if (budgetSpent()) return
@@ -479,8 +484,16 @@ class PeerSession(
         if (host != null) publishState(clock, HostReason.ROSTER)
     }
 
-    /** A reconnect: a new seat, a new session key, and everything tied to the old key reset. */
+    /**
+     * A reconnect: a new seat, a new session key, and everything tied to the old key reset.
+     *
+     * A host's return is the same re-seat plus the two things §9.1 and §6.1 add to it: the count
+     * takes the absence charge, and the connection that signed a state is the one its own `host`
+     * entry commits, so a fresh state goes out — above the edition this host held, with the new
+     * key in the new seat — before anything else is published under it.
+     */
     fun reseat(
+        clock: Long,
         seat: String,
         roster: Collection<String>,
         awarenessClientId: Long,
@@ -501,10 +514,12 @@ class PeerSession(
         resyncFrom = null
         holdsAnnouncedAt = null
         ending = null
-        if (host != null) {
-            roomFrames += ABSENCE_CHARGE
-            host.seated(seat, session)
-        }
+        val producer = host ?: return
+        roomFrames += HostProducer.ABSENCE_CHARGE
+        producer.countFrames(roomFrames)
+        producer.saveFrames()
+        producer.seated(seat, session)
+        publishState(clock, HostReason.RETURN)
     }
 
     fun detach() {
@@ -792,7 +807,7 @@ class PeerSession(
 
     private fun countFrame() {
         roomFrames += 1
-        host?.roomFrames = roomFrames
+        host?.countFrames(roomFrames)
     }
 
     private fun budgetSpent(): Boolean {
@@ -854,8 +869,6 @@ class PeerSession(
     }
 
     companion object {
-        /** What a host is charged for a reconnect whose frames it could not count (§6.2). */
-        const val ABSENCE_CHARGE = 1L shl 21
         private const val MAX_REPLIES_PER_FRAME = 1
         private const val EMPTY_DOCUMENT_MARK = "x"
         private val LOCAL = Any()
