@@ -151,38 +151,43 @@ class SelvageService : Disposable {
                         }
                     GrantFolder.Root(path, root.name) to real
                 }
+        // The IDE's own order for `contentRoots` is the platform's and is not documented, so it
+        // decides nothing here: the roots are sorted by real path, the spelling breaking a tie,
+        // before a duplicate is dropped and before a name is handed out. Which of two spellings of
+        // one folder is kept, and which of two roots of the same name keeps the bare one, are then
+        // the same for the same project however the IDE reports it. The roots go back out in the
+        // order they were read, so a session whose names are unique shares exactly the listing it
+        // shared before.
+        val byReal = candidates.sortedWith(compareBy({ it.second.toString() }, { it.first.path.toString() }))
         val kept =
-            candidates
+            byReal
                 .distinctBy { (_, real) -> real }
-                .filter { (_, real) -> candidates.none { (_, other) -> other != real && real.startsWith(other) } }
-        if (kept.isNotEmpty()) return named(kept)
+                .filter { (_, real) -> byReal.none { (_, other) -> other != real && real.startsWith(other) } }
+        if (kept.isNotEmpty()) {
+            val read = candidates.withIndex().associate { (index, candidate) -> candidate.first.path to index }
+            return named(kept).sortedBy { read.getValue(it.path) }
+        }
         val base = project.basePath?.let { Path.of(it) }?.takeIf { it.toFile().isDirectory } ?: return emptyList()
         return listOf(GrantFolder.Root(base))
     }
 
     /**
-     * The kept roots, with the name each one's paths carry. Two disjoint roots can be called the same
-     * — two checkouts both called `src`, a `frontend/app` and a `backend/app` — and one name cannot
-     * prefix both, so the first root to bear a name keeps it and the rest take `name-2`, `name-3`, …
-     * Every name a root came with is claimed before any suffix is minted, so a root called `app-2` is
-     * never renamed by two roots called `app`.
-     *
-     * Which root is first is decided by the roots' real paths, not by the IDE's order: the order of
-     * `contentRoots` is the platform's own and is not documented, so a name that followed it would
-     * land on a different root from one run to the next. The roots stay in the order they were read,
-     * so a session whose names are unique shares exactly the listing it shared before.
+     * The kept roots, in the order their real paths sort, with the name each one's paths carry. Two
+     * disjoint roots can be called the same — two checkouts both called `src`, a `frontend/app` and
+     * a `backend/app` — and one name cannot prefix both, so the first root in this order keeps it
+     * and the rest take `name-2`, `name-3`, … Every name a root came with is claimed before any
+     * suffix is minted, so a root called `app-2` is never renamed by two roots called `app`.
      */
     private fun named(roots: List<Pair<GrantFolder.Root, Path>>): List<GrantFolder.Root> {
-        val order = roots.indices.sortedBy { roots[it].second.toString() }
         val names = arrayOfNulls<String>(roots.size)
         val taken = HashSet<String>()
-        for (index in order) {
-            val name = roots[index].first.name
+        for ((index, root) in roots.withIndex()) {
+            val name = root.first.name
             if (taken.add(name)) names[index] = name
         }
-        for (index in order) {
+        for ((index, root) in roots.withIndex()) {
             if (names[index] != null) continue
-            val name = roots[index].first.name
+            val name = root.first.name
             var suffix = 2
             while (!taken.add("$name-$suffix")) suffix += 1
             names[index] = "$name-$suffix"
