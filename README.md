@@ -6,15 +6,14 @@ share a link, come edit my code with me.
 ![IntelliJ IDEA hosting a session: Grace's caret, selection and name drawn in Ada's editor, and Sharing “taskboard” in the status bar](docs/images/marketplace/01-host-editing.png)
 
 Status: published on the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/34763-selvage)
-as `Selvage`. Hosting, joining by invite, editing together, carets, go to and follow all work today;
-the gaps are in [What is not here yet](docs/limits.md).
+as `Selvage`. Hosting, joining by invite, editing together, carets, go to and follow all work today.
 
 ## Get it working
 
 You need:
 
 - An IDE built on the IntelliJ Platform 2026.2 (build 262) or newer: IntelliJ IDEA, PyCharm,
-  WebStorm, GoLand and the rest. The plugin depends on the platform alone.
+  WebStorm, GoLand and the rest.
 - A `selvaged` to connect to. Start one and note the address it prints. A guest needs only the
   invite link the host sends.
 
@@ -83,14 +82,9 @@ client differs from the VS Code one and why.
 
 ## More
 
-- [Command behaviour](docs/commands.md): every command's questions, answers and refusals, and the
-  comparison with the VS Code client, row by row.
+- [Command behaviour](docs/commands.md): every command's questions, answers and refusals, and
+  where this client differs from the VS Code one.
 - [Configuration](docs/configuration.md): the settings, their defaults and what they change.
-- [Architecture](docs/architecture.md): the engine, the plugin and how a document stays in step.
-- [What is not here yet](docs/limits.md): the known gaps.
-- [Checks](docs/checks.md): the gate, the tests and the two-IDE end-to-end test.
-- [Releasing](docs/releasing.md): the release button, the change notes it requires and what to do
-  when a run stops part way.
 
 ## Licence
 
