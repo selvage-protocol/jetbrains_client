@@ -86,7 +86,8 @@ documents are read-only.` is said once, as a warning. The room's edits still rea
 A peer's name, caret and selection are drawn where they are, and only the primary caret is shared:
 extra carets stay yours. While a modal dialog is open in your IDE the room's changes to your
 documents wait and land when it closes, because the platform does not allow a document write under
-a modal dialog; your own typing in another window still goes out.
+a modal dialog. Your own typing normally goes out as you type; an edit that has to be merged with
+something already in flight is queued and goes out with the rest when the dialog closes.
 
 ## Where this client differs from the VS Code client, and why
 
