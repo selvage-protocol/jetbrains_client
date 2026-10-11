@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.engine
 
+import dev.dontblameme.selvage.crdt.EditorCommit
 import dev.dontblameme.selvage.crdt.TextDelta
 import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
@@ -131,6 +132,75 @@ class SelvageSessionTest {
         relay.settle()
         assertEquals("> hello, world\n", host.text("README.md"))
         assertEquals(host.text("README.md"), guest.text("README.md"))
+    }
+
+    @Test
+    fun `queued editor CRDT operations commit atomically and converge with another session`() {
+        val host = host(read = { "abcdefghij" })
+        val guest = join(host)
+        guest.open("README.md")
+        relay.settle()
+        val editor = guest.editorText("README.md")!!.replace(1, 1, "!").replace(10, 10, "?")
+        host.insert("README.md", 5, "R")
+        relay.settle()
+        assertEquals(EditorCommit.Moved, guest.commitEditorIf("README.md", editor, "abcdefghij", 1024 * 1024))
+        assertEquals("abcdeRfghij", guest.text("README.md"))
+        assertTrue(guest.commitEditorIf("README.md", editor, "abcdeRfghij", 1024 * 1024) is EditorCommit.Applied)
+        relay.settle()
+        assertEquals("a!bcdeRfghi?j", guest.text("README.md"))
+        assertEquals(guest.text("README.md"), host.text("README.md"))
+    }
+
+    @Test
+    fun `a viewer refuses queued CRDT updates before they mutate its replica`() {
+        val host = host()
+        val viewer = join(host, role = Role.VIEWER)
+        viewer.open("README.md")
+        relay.settle()
+        val editor = viewer.editorText("README.md")!!.replace(0, 0, "forbidden ")
+        assertEquals(EditorCommit.Refused, viewer.commitEditorIf("README.md", editor, "hello\n", 1024 * 1024))
+        relay.settle()
+        assertEquals("hello\n", viewer.text("README.md"))
+        assertEquals(viewer.text("README.md"), host.text("README.md"))
+    }
+
+    @Test
+    fun `an editor introduced root is observed when another peer edits it`() {
+        val host = host(read = { null })
+        val seen = Recorded()
+        val guest = join(host, seen)
+        val editor = guest.editorText("README.md")!!.replace(0, 0, "local")
+        assertTrue(guest.commitEditorIf("README.md", editor, "", 1024 * 1024) is EditorCommit.Applied)
+        relay.settle()
+        assertEquals("local", host.text("README.md"))
+        host.insert("README.md", 0, "remote ")
+        relay.settle()
+        assertEquals("remote local", guest.text("README.md"))
+        assertTrue(seen.all<SessionEvent.RemoteEdits>().flatMap { it.edits }.any { it.path == "README.md" })
+    }
+
+    @Test
+    fun `a target path commit cannot mutate a different root`() {
+        val host = host(read = { "same" })
+        val guest = join(host)
+        guest.open("README.md")
+        guest.open("src/main.rs")
+        relay.settle()
+        val editor = guest.editorText("src/main.rs")!!.replace(0, 2, "wrong root ")
+        assertEquals(
+            EditorCommit.Refused,
+            guest.commitEditorIf(
+                "README.md",
+                editor,
+                guest.text("README.md"),
+                1024 * 1024,
+            ),
+        )
+        relay.settle()
+        assertEquals("same", guest.text("src/main.rs"))
+        assertEquals("same", guest.text("README.md"))
+        assertEquals("same", host.text("src/main.rs"))
+        assertEquals("same", host.text("README.md"))
     }
 
     @Test

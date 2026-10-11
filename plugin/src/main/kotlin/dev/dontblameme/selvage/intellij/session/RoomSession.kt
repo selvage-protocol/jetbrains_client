@@ -26,6 +26,8 @@ import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.util.Alarm
 import com.intellij.util.concurrency.AppExecutorUtil
+import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.EditorText
 import dev.dontblameme.selvage.engine.SelvageSession
 import dev.dontblameme.selvage.engine.SessionEnding
 import dev.dontblameme.selvage.engine.SessionEvent
@@ -1227,6 +1229,15 @@ class RoomSession(
             end: Int,
             text: String,
         ): Boolean = engine.replaceIf(path, expected, start, end - start, text)
+
+        override fun editorText(path: String): EditorText = checkNotNull(engine.editorText(path))
+
+        override fun commitEditorIf(
+            path: String,
+            editor: EditorText,
+            expected: String,
+            maxBytes: Int,
+        ): EditorCommit = engine.commitEditorIf(path, editor, expected, maxBytes)
 
         override fun hold(path: String) = engine.open(path)
 

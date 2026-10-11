@@ -3,6 +3,8 @@ package dev.dontblameme.selvage.peer
 import dev.dontblameme.selvage.crdt.Awareness
 import dev.dontblameme.selvage.crdt.DecodeException
 import dev.dontblameme.selvage.crdt.Doc
+import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.EditorText
 import dev.dontblameme.selvage.crdt.RelativePosition
 import dev.dontblameme.selvage.crdt.Sync
 import dev.dontblameme.selvage.crdt.SyncMessage
@@ -570,6 +572,23 @@ class PeerSession(
                 handle.delete(index, length)
             }
         return publishEdit(update)
+    }
+
+    fun editorText(path: String): EditorText = EditorText.capture(doc, path)
+
+    fun commitEditorIf(
+        path: String,
+        editor: EditorText,
+        expected: String,
+        maxBytes: Int,
+    ): EditorCommit {
+        if (path != editor.path || ownRole() == Role.VIEWER) return EditorCommit.Refused
+        val (refusal, plan) = editor.plan(doc, expected, maxBytes)
+        if (refusal != null) return refusal
+        var visible: EditorText? = null
+        val update = editLocally(path) { visible = plan!!.apply(doc) }
+        publishEdit(update)
+        return EditorCommit.Applied(EditorText.capture(doc, path), visible!!)
     }
 
     private fun editLocally(
