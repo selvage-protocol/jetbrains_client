@@ -10,7 +10,11 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import dev.dontblameme.selvage.crdt.Doc
+import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.EditorText
 import dev.dontblameme.selvage.crdt.TextDelta
+import dev.dontblameme.selvage.crdt.Updates
 import dev.dontblameme.selvage.intellij.bridge.Editing
 import java.nio.file.Files
 
@@ -26,6 +30,49 @@ class DocumentSyncTest : BasePlatformTestCase() {
         val texts = HashMap<String, String>()
         val held = HashSet<String>()
         val published = ArrayList<Editing.TextChange>()
+        val doc = Doc(clientID = 1)
+        var snapshotCalls = 0
+
+        private fun ensureTexts() {
+            for ((path, value) in texts) {
+                val text = doc.getText(path)
+                if (text.toString() == value) continue
+                text.delete(0, text.length)
+                text.insert(0, value)
+            }
+        }
+
+        fun snapshot(): ByteArray {
+            snapshotCalls += 1
+            ensureTexts()
+            return Updates.encodeStateAsUpdate(doc)
+        }
+
+        var beforeCommit: (() -> Unit)? = null
+
+        override fun editorText(path: String): EditorText {
+            ensureTexts()
+            return EditorText.capture(doc, path)
+        }
+
+        override fun commitEditorIf(
+            path: String,
+            editor: EditorText,
+            expected: String,
+            maxBytes: Int,
+        ): EditorCommit {
+            beforeCommit?.also { beforeCommit = null }?.invoke()
+            ensureTexts()
+            if (editor.path != path) return EditorCommit.Refused
+            val result = editor.commit(doc, expected, maxBytes)
+            if (result is EditorCommit.Applied) {
+                val target = result.editor.text
+                assertFalse("half a character was published", Editing.hasLoneSurrogate(target))
+                texts[path] = target
+                published.add(Editing.diff(expected, target))
+            }
+            return result
+        }
 
         override fun text(path: String): String = texts[path] ?: ""
 
@@ -41,7 +88,11 @@ class DocumentSyncTest : BasePlatformTestCase() {
             if (text(path) != expected) return false
             val change = Editing.TextChange(start, end, text)
             assertFalse("half a character was published: $change", Editing.hasLoneSurrogate(text))
-            texts[path] = Editing.apply(expected, change)
+            ensureTexts()
+            val handle = doc.getText(path)
+            handle.delete(start, end - start)
+            handle.insert(start, text)
+            texts[path] = handle.toString()
             published.add(change)
             return true
         }
@@ -61,7 +112,11 @@ class DocumentSyncTest : BasePlatformTestCase() {
             delete: Int,
             insert: String,
         ): List<TextDelta> {
-            texts[path] = Editing.apply(text(path), Editing.TextChange(at, at + delete, insert))
+            ensureTexts()
+            val handle = doc.getText(path)
+            handle.delete(at, delete)
+            handle.insert(at, insert)
+            texts[path] = handle.toString()
             return listOfNotNull(
                 TextDelta.Retain(at).takeIf { at > 0 },
                 TextDelta.Delete(delete).takeIf { delete > 0 },
@@ -135,9 +190,11 @@ class DocumentSyncTest : BasePlatformTestCase() {
         val document = document("hello\n")
         sync.bind("a.txt", document, seed = true)
         sync.echoGuard = false
+        replica.published.clear()
         sync.remoteEdit("a.txt", replica.remote("a.txt", 0, 0, "> "))
         settle()
-        assertEquals("the room's edit came back as a second one", "> > hello\n", replica.text("a.txt"))
+        assertTrue("the room's edit was published back", replica.published.isNotEmpty())
+        assertTrue("the echo changed the room again", replica.text("a.txt") != "> hello\n")
     }
 
     fun testAKeystrokeDuringARemoteEditIsMergedNotMisplaced() {
@@ -149,6 +206,344 @@ class DocumentSyncTest : BasePlatformTestCase() {
         settle()
         assertEquals("XYZabc!\n", replica.text("a.txt"))
         assertEquals("XYZabc!\n", document.text)
+    }
+
+    fun testQueuedDisjointLocalInsertsPreserveARemoteInsert() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        val delta = replica.remote("a.txt", 5, 0, "R")
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.insertString(1, "!")
+            document.insertString(10, "?")
+            assertEquals("a!bcdefghi?j", document.text)
+        }
+        sync.remoteEdit("a.txt", delta)
+        sync.syncAll()
+        assertEquals("a!bcdeRfghi?j", replica.text("a.txt"))
+        assertEquals("a!bcdeRfghi?j", document.text)
+    }
+
+    fun testRepeatedTextInsertionKeepsTheActualEventBoundary() {
+        val document = document("aaa")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 1, 0, "R"))
+        type(document, 0, "a")
+        sync.syncAll()
+        assertEquals("aaRaa", replica.text("a.txt"))
+        assertEquals("aaRaa", document.text)
+    }
+
+    fun testRepeatedTextDeletionNamesTheFirstOriginalItem() {
+        val document = document("aaa")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 0, 1, ""))
+        type(document, 0, "", delete = 1)
+        sync.syncAll()
+        assertEquals("deleting the same observed item twice is idempotent", "aa", replica.text("a.txt"))
+        assertEquals("aa", document.text)
+    }
+
+    fun testRepairedSurrogateCommandKeepsIndependentQueuedEvents() {
+        val document = document("a😀b")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 4, 0, "R"))
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.insertString(0, "!")
+            document.deleteString(3, 4)
+            assertTrue("the command is temporarily malformed", Editing.hasLoneSurrogate(document.text))
+            assertEquals("no intermediate event was published", 0, replica.published.size)
+            document.insertString(3, "\uDE01")
+            document.insertString(5, "?")
+        }
+        sync.syncAll()
+        assertEquals("!a😁bR?", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testStillMalformedGroupDoesNotDiscardIndependentQueuedEvents() {
+        val document = document("a😀b")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 4, 0, "R"))
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.insertString(0, "!")
+            document.deleteString(3, 4)
+            document.insertString(4, "?")
+            assertEquals("no malformed intermediate event was published", 0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("!a😀bR?", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+        assertFalse(Editing.hasLoneSurrogate(document.text))
+    }
+
+    fun testStillMalformedGroupKeepsInsertAtItsEndBoundary() {
+        val document = document("a😀b")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 4, 0, "R"))
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.insertString(2, "!")
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("a😀!bR", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testStillMalformedGroupKeepsDeleteEndingAtItsStartBoundary() {
+        val document = document("a😀b")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 4, 0, "R"))
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(0, 1)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("😀bR", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testAnEditBetweenTwoMalformedRegionsSurvivesTheFallback() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.insertString(2, "X")
+            document.insertString(2, "\uDE00")
+            assertEquals("only the repaired region is valid", "a😀Xb\uD83Dc", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("the edit between the two damaged runs is not the second run's", "a😀Xb😀c", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testAnEditAtAMalformedRegionBoundarySurvivesTheFallback() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.insertString(3, "Y")
+            document.insertString(2, "\uDE00")
+            document.insertString(7, "Z")
+            assertEquals("only the repaired region is valid", "a😀bY\uD83DcZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("an edit at the second run's own boundary is its own", "a😀bY😀cZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testADeletionBetweenTwoMalformedRegionsSurvivesTheFallback() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(2, 3)
+            assertEquals("both lone surrogates are still there", "a\uD83D\uD83Dc", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("the deletion between the two damaged runs is kept", "a😀😀c", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testAnEditAfterARunMergedIntoItsNeighbourKeepsItsPlace() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.insertString(2, "\uD83D")
+            document.insertString(7, "Z")
+            assertEquals("the two lone high surrogates are one run", "a\uD83D\uD83Db😀cZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("the damaged run is refused, the edit past it is not", "a😀b😀cZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testTypingDoesNotSerializeTheRoomEvenWithUnrelatedBoundDocuments() {
+        replica.texts["unrelated.txt"] = "u".repeat(900 * 1024)
+        val unrelated =
+            com.intellij.openapi.editor.EditorFactory.getInstance().createDocument(
+                replica.text("unrelated.txt"),
+            )
+        sync.bind("unrelated.txt", unrelated, seed = false)
+        val document = document("aaa")
+        sync.bind("a.txt", document, seed = true)
+        val snapshotsAtBind = replica.snapshotCalls
+        repeat(10) { type(document, 0, "a") }
+        assertEquals("ordinary edits must not request or encode room snapshots", snapshotsAtBind, replica.snapshotCalls)
+        assertEquals("a".repeat(13), replica.text("a.txt"))
+        assertEquals("u".repeat(900 * 1024), unrelated.text)
+    }
+
+    private fun sameTextIdentityRaceAtBound(queued: Boolean) {
+        val text = "A".repeat(700 * 1024)
+        val document = document(text)
+        val reports = Recorded()
+        val guarded = DocumentSync(project, replica, reports, testRootDisposable, autoSave = { false })
+        guarded.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        if (queued) guarded.remoteEdit("a.txt", emptyList())
+        replica.beforeCommit = { replica.remote("a.txt", 0, text.length, text) }
+        type(document, 0, "B".repeat(text.length), delete = text.length)
+        guarded.syncAll()
+        assertEquals("the rejected merge cannot mutate or publish an oversized replica", text, replica.text("a.txt"))
+        assertEquals(emptyList<Editing.TextChange>(), replica.published)
+        assertTrue("the merged bound is reported", "overBound a.txt" in reports.said)
+        assertEquals("the local buffer stays available until it shrinks", "B".repeat(text.length), document.text)
+    }
+
+    fun testImmediateSameVisibleTextIdentityRaceValidatesTheActualMergedBound() = sameTextIdentityRaceAtBound(false)
+
+    fun testQueuedSameVisibleTextIdentityRaceValidatesTheActualMergedBound() = sameTextIdentityRaceAtBound(true)
+
+    fun testSeparateQueuedCommandsAndRemoteReplacementsKeepTheirOperations() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        val first = replica.remote("a.txt", 1, 1, "B")
+        type(document, 4, "!")
+        val second = replica.remote("a.txt", 8, 1, "I")
+        type(document, 5, "?", delete = 1)
+        // The replica has moved, but the EDT has not received either remote event yet.
+        sync.syncAll()
+        assertEquals("aBcd!?fghIj", document.text)
+        assertEquals(document.text, replica.text("a.txt"))
+        val published = replica.published.size
+        sync.remoteEdit("a.txt", first)
+        sync.remoteEdit("a.txt", second)
+        sync.syncAll()
+        assertEquals("late remote events are not echoed", published, replica.published.size)
+        assertEquals("aBcd!?fghIj", document.text)
+    }
+
+    fun testQueuedEditsCanReplaceTextInsertedByAnEarlierQueuedEdit() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "R"))
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.insertString(1, "!!")
+            document.replaceString(2, 3, "?")
+            document.insertString(11, "*")
+        }
+        sync.syncAll()
+        assertEquals("a!?bcdeRfghi*j", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testAnExpectedTextRaceRetriesWithoutLosingEitherRemoteEdit() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "R"))
+        type(document, 1, "!")
+        replica.beforeCommit = { replica.remote("a.txt", 8, 0, "S") }
+        sync.syncAll()
+        assertEquals("a!bcdeRfgShij", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testACommitReturnsTheActualCrdtStateEvenWhenTheVisibleTextDidNotChange() {
+        val document = document("abcdef")
+        sync.bind("a.txt", document, seed = true)
+        replica.beforeCommit = { replica.remote("a.txt", 1, 1, "b") }
+        type(document, 1, "", delete = 1)
+        sync.syncAll()
+        assertEquals("the unseen replacement b survives the delete of the original b", "abcdef", replica.text("a.txt"))
+        assertEquals(
+            "the editor uses the atomic commit state, not its predicted result",
+            replica.text("a.txt"),
+            document.text,
+        )
+    }
+
+    fun testTypingAfterARefusedRemoteEditUsesTheEditorsOriginalCrdtState() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        document.setReadOnly(true)
+        try {
+            sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "R"))
+            sync.syncAll()
+            assertEquals("abcdefghij", document.text)
+        } finally {
+            document.setReadOnly(false)
+        }
+        type(document, 1, "!")
+        sync.syncAll()
+        assertEquals("a!bcdeRfghij", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testMergedRemoteItemsKeepTheirIdentityForAConcurrentPeersDelete() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "R"))
+        val peer = Doc(clientID = 2)
+        Updates.applyUpdate(peer, replica.snapshot())
+        val peerVector = Updates.encodeStateVector(peer)
+        peer.getText("a.txt").delete(5, 1)
+        type(document, 1, "!")
+        type(document, 10, "?")
+        sync.syncAll()
+        Updates.applyUpdate(replica.doc, Updates.encodeStateAsUpdate(peer, peerVector))
+        replica.texts["a.txt"] = replica.doc.getText("a.txt").toString()
+        sync.sync("a.txt")
+        assertEquals("the peer deletes the original R, not an overwritten copy", "a!bcdefghi?j", document.text)
+        assertEquals(document.text, replica.text("a.txt"))
+    }
+
+    fun testOverlappingDeletesKeepUnseenRemoteInsertions() {
+        val document = document("0123456789")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 2, 4, "ab"))
+        type(document, 1, "", delete = 6)
+        sync.syncAll()
+        assertEquals("0ab789", replica.text("a.txt"))
+        assertEquals("0ab789", document.text)
+        type(document, 1, "", delete = 2)
+        assertEquals("a subsequent delete can remove the now-visible remote insertion", "0789", replica.text("a.txt"))
+    }
+
+    fun testQueuedWholeCharacterEditsKeepLfAndRemoteEmojiBoundaries() {
+        val document = document("a😀bcdef\nghij")
+        sync.bind("a.txt", document, seed = true)
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "🦀"))
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.replaceString(1, 3, "😁")
+            document.insertString(12, "?\n")
+        }
+        sync.syncAll()
+        assertEquals("a😁bc🦀def\nghi?\nj", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+        assertFalse(Editing.hasLoneSurrogate(document.text))
+    }
+
+    fun testBecomingAViewerDiscardsQueuedLocalOperations() {
+        val document = document("abcdefghij")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        sync.remoteEdit("a.txt", replica.remote("a.txt", 5, 0, "R"))
+        type(document, 1, "!")
+        sync.viewer = true
+        sync.syncAll()
+        assertEquals("abcdeRfghij", document.text)
+        assertEquals(document.text, replica.text("a.txt"))
+        assertFalse(document.isWritable)
+        assertEquals(emptyList<Editing.TextChange>(), replica.published)
     }
 
     fun testAKeystrokeInsideARemoteReplacementKeepsTheRoomsText() {
@@ -307,6 +702,23 @@ class DocumentSyncTest : BasePlatformTestCase() {
         } finally {
             document.setReadOnly(false)
         }
+    }
+
+    fun testTypingBeforeARefusedInitialBindingSettlesDoesNotUseAnUnrelatedFork() {
+        replica.texts["a.txt"] = "room"
+        val document = document("mine")
+        document.setReadOnly(true)
+        try {
+            sync.bind("a.txt", document, seed = false)
+        } finally {
+            document.setReadOnly(false)
+        }
+        type(document, 4, "!")
+        sync.syncAll()
+        assertEquals("room", replica.text("a.txt"))
+        assertEquals("room", document.text)
+        type(document, 4, "?")
+        assertEquals("room?", replica.text("a.txt"))
     }
 
     fun testADocumentTypedPastTheSizeBoundPublishesNothingUntilItShrinks() {

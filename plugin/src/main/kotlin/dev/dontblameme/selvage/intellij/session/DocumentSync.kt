@@ -11,6 +11,8 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.util.Alarm
+import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.EditorText
 import dev.dontblameme.selvage.crdt.TextDelta
 import dev.dontblameme.selvage.intellij.bridge.Editing
 import dev.dontblameme.selvage.intellij.bridge.Editing.TextChange
@@ -31,6 +33,16 @@ interface Replica {
         text: String,
     ): Boolean
 
+    fun editorText(path: String): EditorText
+
+    /** Commits only this path's observed-item deletes and anchored inserts, with atomic validation. */
+    fun commitEditorIf(
+        path: String,
+        editor: EditorText,
+        expected: String,
+        maxBytes: Int,
+    ): EditorCommit
+
     fun hold(path: String)
 
     fun release(path: String)
@@ -41,9 +53,8 @@ interface Replica {
  * loops. A `Document` is UTF-16 with LF line separators (the file's own separator is applied when it
  * is saved), so its offsets are the replica's and the EOL policy is the platform's.
  *
- * Each bound document keeps the replica text it last agreed with. A keystroke is published at once
- * when the replica still reads that text; when a remote edit has landed in between, the keystroke is
- * held and both are merged on the next sync, so neither side's change is put at a stale offset. A
+ * Each bound document retains only its visible item identities. Editor operations name the items
+ * seen and the insertion boundary, so unseen concurrent insertions survive queued deletes. A
  * remote edit is applied in a write command, which is on the undo stack as in VS Code: undoing a
  * peer's edit is a change like any other and is published.
  */
@@ -76,10 +87,12 @@ class DocumentSync(
     private class Bound(
         val path: String,
         val document: Document,
-        var shadow: String,
+        var editor: EditorText,
     ) {
         var applying = 0
-        val pending = ArrayList<TextChange>()
+        var shadow = editor.text
+        var malformed: Malformed? = null
+        var invalid = false
         val remote = ArrayList<List<TextDelta>>()
         var syncQueued = false
 
@@ -89,6 +102,69 @@ class DocumentSync(
         /** The room text the editor last refused to take, said once until a write lands. */
         var refused: String? = null
     }
+
+    /**
+     * What a document falls back to while a lone surrogate sits in it, and the runs that lone surrogate
+     * damaged. A run moves only with an event that touches it, so an edit between two damaged runs is
+     * an edit like any other and survives the fallback.
+     */
+    private class Malformed(
+        var backup: EditorText,
+        val regions: MutableList<Region>,
+    ) {
+        /** [position] in the damaged text, as an offset of [backup]. */
+        fun toBackup(position: Int): Int = position + regions.filter { it.end <= position }.sumOf { it.offset }
+
+        fun shift(
+            from: Int,
+            by: Int,
+        ) {
+            for (region in regions) {
+                if (region.start >= from) {
+                    region.start += by
+                    region.end += by
+                }
+            }
+        }
+    }
+
+    /**
+     * Merges every damaged run an event's own boundaries cover into one, and leaves the backup alone:
+     * what the event damaged is what [sync] restores.
+     */
+    private fun merge(
+        group: Malformed,
+        before: String,
+        change: TextChange,
+        shift: Int,
+    ) {
+        val (start, end) = damagedSpan(before, change)
+        var from = start
+        var to = end
+        var offset = 0
+        val kept = ArrayList<Region>()
+        for (region in group.regions) {
+            if (start < region.end && end > region.start) {
+                from = minOf(from, region.start)
+                to = maxOf(to, region.end)
+                offset += region.offset
+            } else {
+                kept.add(region)
+            }
+        }
+        group.regions.clear()
+        group.regions.addAll(kept)
+        group.shift(end, shift)
+        group.regions.add(Region(from, to + shift, offset - shift))
+        group.regions.sortBy { it.start }
+    }
+
+    /** A run of the damaged text, and what [Malformed.backup] holds there: its length there less its length here. */
+    private class Region(
+        var start: Int,
+        var end: Int,
+        var offset: Int,
+    )
 
     private val bound = HashMap<String, Bound>()
     private val byDocument = HashMap<Document, Bound>()
@@ -148,13 +224,16 @@ class DocumentSync(
         seed: Boolean,
     ) {
         if (disposed || path in bound) return
-        val entry = Bound(path, document, replica.text(path))
+        val entry = Bound(path, document, replica.editorText(path))
         bound[path] = entry
         byDocument[document] = entry
         if (viewer) lock(entry, true)
-        if (seed && !replica.has(path)) {
+        if (seed && !viewer && !replica.has(path)) {
             val text = document.text
-            if (replica.replaceIf(path, "", 0, 0, text)) entry.shadow = text
+            if (replica.replaceIf(path, "", 0, 0, text)) {
+                entry.editor = replica.editorText(entry.path)
+                entry.shadow = entry.editor.text
+            }
         }
         replica.hold(path)
         reconcile(entry)
@@ -194,8 +273,10 @@ class DocumentSync(
      */
     fun syncAll() {
         bound.values
-            .filter { it.pending.isNotEmpty() || it.remote.isNotEmpty() || it.refused != null }
-            .forEach { sync(it) }
+            .filter {
+                it.editor.changed || it.malformed != null || it.invalid || it.remote.isNotEmpty() ||
+                    it.refused != null || it.document.text != it.shadow
+            }.forEach { sync(it) }
     }
 
     fun sync(path: String) {
@@ -207,24 +288,110 @@ class DocumentSync(
         event: DocumentEvent,
     ) {
         if (echoGuard && entry.applying > 0) return
+        if (viewer) {
+            scheduleSync(entry)
+            return
+        }
         reports.localEdit(entry.path)
         moveSave(entry)
+        val after = entry.document.text
+        val before =
+            after.substring(0, event.offset) + event.oldFragment + after.substring(event.offset + event.newLength)
+        if (echoGuard && entry.editor.text != before) {
+            entry.invalid = true
+            scheduleSync(entry)
+            return
+        }
         val change = TextChange(event.offset, event.offset + event.oldLength, event.newFragment.toString())
-        if (overBound(entry)) {
-            entry.pending.add(change)
+        record(entry, before, after, change)
+        if (entry.malformed != null) {
+            scheduleSync(entry)
             return
         }
-        // §7: a client writes whole code points. An edit whose boundary falls inside a character is
-        // left to the sync, whose diff widens it, and one that would write half a character is refused.
-        val whole = !Editing.splitsCharacter(entry.shadow, change) && !Editing.hasLoneSurrogate(change.text)
-        if (whole && entry.pending.isEmpty() && entry.remote.isEmpty() &&
-            replica.replaceIf(entry.path, entry.shadow, change.start, change.end, change.text)
-        ) {
-            entry.shadow = Editing.apply(entry.shadow, change)
-            return
+        if (overBound(entry)) return
+        if (entry.remote.isEmpty()) {
+            when (
+                val result =
+                    replica.commitEditorIf(
+                        entry.path,
+                        entry.editor,
+                        entry.shadow,
+                        Grant.MAX_GRANT_FILE_BYTES,
+                    )
+            ) {
+                is EditorCommit.Applied -> {
+                    entry.editor = if (result.editor.text == after) result.editor else result.visible
+                    entry.shadow = entry.editor.text
+                    if (result.editor.text != after) {
+                        entry.remote.add(emptyList())
+                        scheduleSync(entry)
+                    }
+                    return
+                }
+
+                EditorCommit.OverBound -> {
+                    reports.overBound(entry.path)
+                    return
+                }
+
+                else -> {}
+            }
         }
-        entry.pending.add(change)
         scheduleSync(entry)
+    }
+
+    /**
+     * Holds the events of one command while the document is malformed. An event that touches no damaged
+     * run is a valid edit and goes into the backup at its own offset; one that damages text merges the
+     * runs it covers. [sync] restores the backup, so only the damaged runs are refused.
+     */
+    private fun record(
+        entry: Bound,
+        before: String,
+        after: String,
+        change: TextChange,
+    ) {
+        val group = entry.malformed
+        val shift = change.text.length - (change.end - change.start)
+        if (group == null) {
+            if (Editing.hasLoneSurrogate(after)) {
+                val (start, end) = damagedSpan(before, change)
+                entry.malformed = Malformed(entry.editor, mutableListOf(Region(start, end + shift, -shift)))
+            }
+        } else if (group.regions.none { change.start < it.end && change.end > it.start }) {
+            val backup =
+                group.backup.replace(group.toBackup(change.start), group.toBackup(change.end), change.text)
+            if (!Editing.hasLoneSurrogate(backup.text)) {
+                group.backup = backup
+                group.shift(change.end, shift)
+            } else {
+                merge(group, before, change, shift)
+            }
+        } else {
+            merge(group, before, change, shift)
+        }
+        entry.editor = entry.editor.replace(change.start, change.end, change.text)
+        if (!Editing.hasLoneSurrogate(after)) entry.malformed = null
+    }
+
+    /** The run of [before] an event's own boundaries damage: half a character it left without its partner. */
+    private fun damagedSpan(
+        before: String,
+        change: TextChange,
+    ): Pair<Int, Int> {
+        val start =
+            if (change.start > 0 && before[change.start - 1].isHighSurrogate()) {
+                change.start - 1
+            } else {
+                change.start
+            }
+        val end =
+            if (change.end < before.length && before[change.end].isLowSurrogate()) {
+                change.end + 1
+            } else {
+                change.end
+            }
+        return start to end
     }
 
     private fun scheduleSync(entry: Bound) {
@@ -239,36 +406,54 @@ class DocumentSync(
         )
     }
 
-    /**
-     * The three-way step: the document's change since the shadow is published over whatever the room
-     * did meanwhile, and the document is brought to the result.
-     */
     private fun sync(entry: Bound) {
         if (disposed || entry.applying > 0) return
+        if (viewer || entry.invalid) {
+            if (entry.invalid) reports.divergence(entry.path)
+            entry.invalid = false
+            entry.malformed = null
+            entry.remote.clear()
+            val room = replica.editorText(entry.path)
+            if (land(entry, room.text, null)) entry.editor = room
+            return
+        }
+        entry.malformed?.let {
+            reports.divergence(entry.path)
+            entry.editor = it.backup
+            entry.malformed = null
+        }
+        if (!entry.editor.changed) {
+            val room = replica.editorText(entry.path)
+            if (applyRemote(entry, room.text)) entry.editor = room
+            return
+        }
+        if (overBound(entry) && !Editing.hasLoneSurrogate(entry.document.text)) return
         repeat(MAX_ATTEMPTS) {
-            val document = entry.document.text
-            val room = replica.text(entry.path)
-            val local = Editing.diff(entry.shadow, document)
-            val remote = Editing.diff(entry.shadow, room)
-            if (local.isEmpty) {
-                entry.pending.clear()
-                applyRemote(entry, room)
-                return
-            }
-            if (overBound(entry)) return
-            val rebased = rebase(local, remote)
-            if (Editing.hasLoneSurrogate(rebased.text) || Editing.splitsCharacter(room, rebased)) return@repeat
-            if (replica.replaceIf(entry.path, room, rebased.start, rebased.end, rebased.text)) {
-                entry.pending.clear()
-                entry.remote.clear()
-                land(entry, Editing.apply(room, rebased), null)
-                return
+            val expected = replica.text(entry.path)
+            when (val result = replica.commitEditorIf(entry.path, entry.editor, expected, Grant.MAX_GRANT_FILE_BYTES)) {
+                is EditorCommit.Applied -> {
+                    entry.remote.clear()
+                    entry.editor = result.editor
+                    if (!land(entry, result.editor.text, null)) entry.editor = result.visible
+                    return
+                }
+
+                EditorCommit.OverBound -> {
+                    reports.overBound(entry.path)
+                    return
+                }
+
+                EditorCommit.Moved -> {}
+
+                EditorCommit.Refused -> {
+                    return@repeat
+                }
             }
         }
         reports.divergence(entry.path)
-        entry.pending.clear()
         entry.remote.clear()
-        land(entry, replica.text(entry.path), null)
+        val room = replica.editorText(entry.path)
+        if (land(entry, room.text, null)) entry.editor = room
     }
 
     /**
@@ -317,15 +502,17 @@ class DocumentSync(
     private fun applyRemote(
         entry: Bound,
         room: String,
-    ) {
+    ): Boolean {
         val deltas = ArrayList(entry.remote)
         entry.remote.clear()
         if (room == entry.shadow) {
             reconcile(entry)
-            return
+            return entry.document.text == room
         }
-        val changes = changesOf(entry.shadow, deltas, room)
-        if (land(entry, room, changes) && autoSave()) scheduleSave(entry)
+        val changes = if (entry.document.text == entry.shadow) changesOf(entry.shadow, deltas, room) else null
+        val landed = land(entry, room, changes)
+        if (landed && autoSave()) scheduleSave(entry)
+        return landed
     }
 
     /** The deltas as changes in sequence, when they turn [from] into [to]; null when they do not. */
@@ -454,47 +641,5 @@ class DocumentSync(
 
     companion object {
         private const val MAX_ATTEMPTS = 4
-
-        /**
-         * [local] as it applies after [remote]: both are replacements of one common text. Text the
-         * remote change wrote survives the local one unless the local change covered it whole.
-         */
-        fun rebase(
-            local: TextChange,
-            remote: TextChange,
-        ): TextChange {
-            if (remote.isEmpty) return local
-            val shift = remote.text.length - (remote.end - remote.start)
-            val remoteEnd = remote.start + remote.text.length
-            return when {
-                local.end <= remote.start -> {
-                    local
-                }
-
-                local.start >= remote.end -> {
-                    TextChange(local.start + shift, local.end + shift, local.text)
-                }
-
-                local.start < remote.start && local.end > remote.end -> {
-                    TextChange(
-                        local.start,
-                        local.end + shift,
-                        local.text,
-                    )
-                }
-
-                local.start < remote.start -> {
-                    TextChange(local.start, remote.start, local.text)
-                }
-
-                local.end > remote.end -> {
-                    TextChange(remoteEnd, local.end + shift, local.text)
-                }
-
-                else -> {
-                    TextChange(remoteEnd, remoteEnd, local.text)
-                }
-            }
-        }
     }
 }

@@ -1,5 +1,7 @@
 package dev.dontblameme.selvage.engine
 
+import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.EditorText
 import dev.dontblameme.selvage.peer.Cursor
 import dev.dontblameme.selvage.peer.Ending
 import dev.dontblameme.selvage.peer.HostOptions
@@ -308,6 +310,22 @@ class SelvageSession private constructor(
             if (text.isNotEmpty() || !session.has(path)) session.insert(path, index, text)
             afterChange()
             true
+        }
+
+    fun editorText(path: String): EditorText? = locked { peer?.editorText(path) }
+
+    /** Expected text, observed identities, and the actual merged file bound are checked under one lock. */
+    fun commitEditorIf(
+        path: String,
+        editor: EditorText,
+        expected: String,
+        maxBytes: Int,
+    ): EditorCommit =
+        locked {
+            val session = peer ?: return@locked EditorCommit.Refused
+            val result = session.commitEditorIf(path, editor, expected, maxBytes)
+            if (result is EditorCommit.Applied) afterChange()
+            result
         }
 
     fun setCursor(
