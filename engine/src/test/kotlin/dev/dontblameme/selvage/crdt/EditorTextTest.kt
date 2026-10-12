@@ -107,6 +107,47 @@ class EditorTextTest {
     }
 
     @Test
+    fun `fragmented alternating clients keep unseen edits in either visual clock order`() {
+        for (gc in listOf(false, true)) {
+            for (prepend in listOf(false, true)) {
+                val doc = Doc(1, gc)
+                val peer = Doc(2, gc)
+                repeat(64) {
+                    val first = doc.getText(path)
+                    first.insert(if (prepend) 0 else first.length, "a")
+                    Updates.applyUpdate(peer, Updates.encodeStateAsUpdate(doc))
+                    val second = peer.getText(path)
+                    second.insert(if (prepend) 0 else second.length, "b")
+                    Updates.applyUpdate(doc, Updates.encodeStateAsUpdate(peer))
+                }
+                val original = (if (prepend) "ba" else "ab").repeat(64)
+                assertEquals(original, doc.getText(path).toString())
+                var editor = EditorText.capture(doc, path)
+                for (index in 63 downTo 0) {
+                    val at = index * 2 + if (prepend) 1 else 0
+                    editor = editor.replace(at, at + 1, "")
+                }
+                editor = editor.replace(64, 64, "!😀")
+                assertEquals("b".repeat(64) + "!😀", editor.text)
+                doc.getText(path).insert(64, "R")
+                doc.getText(path).delete(if (prepend) 0 else 1, 1)
+                val current = doc.getText(path).toString()
+                var publications = 0
+                doc.onUpdate { _, _, _ -> publications++ }
+                assertEquals(EditorCommit.OverBound, editor.commit(doc, current, 68))
+                assertEquals(current, doc.getText(path).toString())
+                assertEquals(0, publications)
+                val applied = assertIs<EditorCommit.Applied>(editor.commit(doc, current, 69))
+                val merged = "b".repeat(31) + "R" + "b".repeat(32) + "!😀"
+                assertEquals(merged, applied.editor.text)
+                assertEquals(merged, doc.getText(path).toString())
+                assertEquals("b".repeat(64) + "!😀", applied.visible.text)
+                assertEquals(1, publications)
+            }
+        }
+    }
+
+    @Test
     fun `capturing an absent path does not create a root`() {
         val doc = Doc(1)
         val editor = EditorText.capture(doc, path)
