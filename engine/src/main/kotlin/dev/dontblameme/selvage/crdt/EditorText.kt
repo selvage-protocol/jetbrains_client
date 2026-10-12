@@ -124,6 +124,25 @@ class EditorText private constructor(
         }
     }
 
+    /** Lookup lists partition client clocks; the current pieces still traverse visual offsets. */
+    private fun firstOverlap(
+        pieces: List<Piece>,
+        clock: Long,
+    ): Int {
+        var low = 0
+        var high = pieces.size
+        while (low < high) {
+            val middle = low + (high - low) / 2
+            val piece = pieces[middle]
+            if (piece.id!!.clock + piece.text.length <= clock) {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low
+    }
+
     internal fun plan(
         doc: Doc,
         expected: String,
@@ -135,7 +154,11 @@ class EditorText private constructor(
         if (current.text != expected) return EditorCommit.Moved to null
         if (hasLoneSurrogate(text)) return EditorCommit.Refused to null
         val normalized = wholeCharacters()
-        val observedByClient = observed.filter { it.id != null }.groupBy { it.id!!.client }
+        val observedByClient =
+            observed
+                .filter { it.id != null }
+                .groupBy { it.id!!.client }
+                .mapValues { (_, pieces) -> pieces.sortedBy { it.id!!.clock } }
         val survivors =
             normalized
                 .filter { it.id != null }
@@ -146,14 +169,18 @@ class EditorText private constructor(
         for (live in current.pieces) {
             val id = live.id!!
             val wanted = observedByClient[id.client].orEmpty()
-            for (old in wanted) {
-                val start = maxOf(id.clock, old.id!!.clock)
+            val keeps = survivors[id.client].orEmpty()
+            var oldIndex = firstOverlap(wanted, id.clock)
+            while (oldIndex < wanted.size) {
+                val old = wanted[oldIndex++]
+                if (old.id!!.clock >= id.clock + live.text.length) break
+                val start = maxOf(id.clock, old.id.clock)
                 val end = minOf(id.clock + live.text.length, old.id.clock + old.text.length)
                 if (start >= end) continue
                 var cursor = start
-                // Both lists are partitions of the same per-client clock space, so a piece outside the
-                // live range is skipped or ends the scan.
-                for (keep in survivors[id.client].orEmpty()) {
+                var keepIndex = firstOverlap(keeps, start)
+                while (keepIndex < keeps.size) {
+                    val keep = keeps[keepIndex++]
                     val keepClock = keep.id!!.clock
                     if (keepClock >= end) break
                     if (keepClock + keep.text.length <= start) continue
@@ -200,8 +227,9 @@ class EditorText private constructor(
                     }.thenByDescending { it.index },
                 ).map { it.value },
         )
-        var merged = current.text
-        for (edit in edits) merged = merged.substring(0, edit.start) + edit.text + merged.substring(edit.end)
+        val builder = StringBuilder(current.text)
+        for (edit in edits) builder.replace(edit.start, edit.end, edit.text)
+        val merged = builder.toString()
         if (hasLoneSurrogate(merged)) return EditorCommit.Refused to null
         if (merged.length > maxBytes ||
             (merged.length * 3L > maxBytes && merged.toByteArray(Charsets.UTF_8).size > maxBytes)

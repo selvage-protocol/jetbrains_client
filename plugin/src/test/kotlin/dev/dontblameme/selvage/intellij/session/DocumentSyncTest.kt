@@ -376,6 +376,127 @@ class DocumentSyncTest : BasePlatformTestCase() {
         assertEquals(replica.text("a.txt"), document.text)
     }
 
+    fun testCollapsedMalformedRunKeepsBoundaryReplacementAndAppend() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(1, 2)
+            assertEquals("ab\uD83Dc", document.text)
+            document.insertString(1, "X")
+            document.replaceString(1, 2, "Q")
+            document.insertString(5, "Z")
+            assertEquals("aQb\uD83DcZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("a😀Qb😀cZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testCollapsedMalformedRunKeepsIndependentReplacement() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(1, 2)
+            document.insertString(1, "X")
+            document.replaceString(1, 2, "Q")
+            assertEquals("aQb\uD83Dc", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("replacing X must not delete the restored emoji", "a😀Qb😀c", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testCollapsedMalformedRunKeepsValidAppend() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(1, 2)
+            document.insertString(1, "X")
+            document.insertString(5, "Z")
+            assertEquals("aXb\uD83DcZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("a😀Xb😀cZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testCollapsedMalformedRunKeepsPartialRepairAndIndependentEdits() {
+        val document = document("a😀b😀c😀d")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(6, 7)
+            document.deleteString(1, 2)
+            document.insertString(1, "X")
+            document.replaceString(1, 2, "Q")
+            document.insertString(4, "\uDE00")
+            document.insertString(8, "Z")
+            assertEquals("aQb😀c\uD83DdZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("a😀Qb😀c😀dZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testCollapsedMalformedRunFromSpanningDeletionKeepsBoundaryEdits() {
+        val document = document("a😀b😀c😀d")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(6, 7)
+            document.deleteString(1, 4)
+            assertEquals("ac\uD83Dd", document.text)
+            document.insertString(1, "X")
+            document.replaceString(1, 2, "Q")
+            document.insertString(5, "Z")
+            assertEquals("aQc\uD83DdZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("a😀b😀Qc😀dZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
+    fun testCollapsedMalformedRunMovesWithDeletionEndingAtItsBoundary() {
+        val document = document("a😀b😀c")
+        sync.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        WriteCommandAction.runWriteCommandAction(project) {
+            document.deleteString(2, 3)
+            document.deleteString(4, 5)
+            document.deleteString(1, 2)
+            document.insertString(0, "P")
+            document.replaceString(0, 2, "Long")
+            document.deleteString(0, 4)
+            assertEquals("b\uD83Dc", document.text)
+            document.insertString(0, "X")
+            document.replaceString(0, 1, "Q")
+            document.insertString(4, "Z")
+            assertEquals("Qb\uD83DcZ", document.text)
+            assertEquals(0, replica.published.size)
+        }
+        sync.syncAll()
+        assertEquals("😀Qb😀cZ", replica.text("a.txt"))
+        assertEquals(replica.text("a.txt"), document.text)
+    }
+
     fun testTypingDoesNotSerializeTheRoomEvenWithUnrelatedBoundDocuments() {
         replica.texts["unrelated.txt"] = "u".repeat(900 * 1024)
         val unrelated =

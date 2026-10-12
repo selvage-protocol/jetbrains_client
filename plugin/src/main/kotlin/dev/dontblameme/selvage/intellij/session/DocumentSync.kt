@@ -112,14 +112,24 @@ class DocumentSync(
         var backup: EditorText,
         val regions: MutableList<Region>,
     ) {
-        /** [position] in the damaged text, as an offset of [backup]. */
-        fun toBackup(position: Int): Int = position + regions.filter { it.end <= position }.sumOf { it.offset }
+        /** A range ends before collapsed restored content; an insertion or range start follows it. */
+        fun toBackup(
+            position: Int,
+            rangeEnd: Boolean = false,
+        ): Int =
+            position +
+                regions
+                    .filter { it.end <= position && !(rangeEnd && it.start == position && it.end == position) }
+                    .sumOf { it.offset }
 
         fun shift(
             from: Int,
             by: Int,
+            insertion: Boolean = false,
         ) {
             for (region in regions) {
+                // An insertion at a collapsed run follows its restored content in the backup.
+                if (insertion && region.start == from && region.end == from) continue
                 if (region.start >= from) {
                     region.start += by
                     region.end += by
@@ -360,10 +370,14 @@ class DocumentSync(
             }
         } else if (group.regions.none { change.start < it.end && change.end > it.start }) {
             val backup =
-                group.backup.replace(group.toBackup(change.start), group.toBackup(change.end), change.text)
+                group.backup.replace(
+                    group.toBackup(change.start),
+                    group.toBackup(change.end, rangeEnd = change.start < change.end),
+                    change.text,
+                )
             if (!Editing.hasLoneSurrogate(backup.text)) {
                 group.backup = backup
-                group.shift(change.end, shift)
+                group.shift(change.end, shift, insertion = change.start == change.end)
             } else {
                 merge(group, before, change, shift)
             }
