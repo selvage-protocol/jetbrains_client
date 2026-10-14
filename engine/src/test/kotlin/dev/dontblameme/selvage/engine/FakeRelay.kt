@@ -279,6 +279,15 @@ class ManualScheduler : Scheduler {
     @Synchronized
     override fun nowMs(): Long = now
 
+    /**
+     * Moves the clock without running anything, as a synchronous operation that consumed real
+     * time does. The timers already due stay due until [advance] runs them.
+     */
+    @Synchronized
+    fun elapse(ms: Long) {
+        now += ms
+    }
+
     @Synchronized
     override fun schedule(
         delayMs: Long,
@@ -309,7 +318,10 @@ class ManualScheduler : Scheduler {
             due.run.run()
             between()
         }
-        synchronized(this) { now = target }
+        // The furthest time any due callback reached is kept: a synchronous operation that consumed
+        // session clock time moves the clock past this advance's target, and the target is not a
+        // ceiling to rewind to. The scheduler's relative clock therefore stays monotone.
+        synchronized(this) { now = maxOf(now, target) }
         between()
     }
 }

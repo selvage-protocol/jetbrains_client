@@ -1222,6 +1222,9 @@ class RoomSession(
 
         override fun has(path: String): Boolean = engine.has(path)
 
+        /** The engine's replica identity, or this replica while no session is seated. */
+        override fun replicaIdentity(): Any = engine.docIdentity() ?: this
+
         override fun replaceIf(
             path: String,
             expected: String,

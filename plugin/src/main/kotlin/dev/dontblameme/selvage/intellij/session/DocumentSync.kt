@@ -24,6 +24,15 @@ interface Replica {
 
     fun has(path: String): Boolean
 
+    /**
+     * The identity of the document an [editorText] basis is bound to.
+     *
+     * A replica may adopt a different document whose visible text and item pieces are equal, so
+     * nothing about a cached basis is visibly stale while a commit against it would be refused for
+     * ever. An adapter compares this to re-capture its bound bases when the owner changes.
+     */
+    fun replicaIdentity(): Any
+
     /** Replaces `[start, end)` with [text] only while the replica reads [expected]. */
     fun replaceIf(
         path: String,
@@ -88,6 +97,7 @@ class DocumentSync(
         val path: String,
         val document: Document,
         var editor: EditorText,
+        var identity: Any,
     ) {
         var applying = 0
         var shadow = editor.text
@@ -234,7 +244,12 @@ class DocumentSync(
         seed: Boolean,
     ) {
         if (disposed || path in bound) return
-        val entry = Bound(path, document, replica.editorText(path))
+        // The identity is read before the basis: the two engine reads take the session lock one at a
+        // time, so a viewer resolution can adopt its baseline between them. An identity older than the
+        // basis makes the next sync re-capture it; a basis older than the identity would be recorded
+        // as the adopted owner and never refreshed, refusing every later keystroke.
+        val identity = replica.replicaIdentity()
+        val entry = Bound(path, document, replica.editorText(path), identity)
         bound[path] = entry
         byDocument[document] = entry
         if (viewer) lock(entry, true)
@@ -284,7 +299,8 @@ class DocumentSync(
     fun syncAll() {
         bound.values
             .filter {
-                it.editor.changed || it.malformed != null || it.invalid || it.remote.isNotEmpty() ||
+                it.identity !== replica.replicaIdentity() ||
+                    it.editor.changed || it.malformed != null || it.invalid || it.remote.isNotEmpty() ||
                     it.refused != null || it.document.text != it.shadow
             }.forEach { sync(it) }
     }
@@ -422,6 +438,7 @@ class DocumentSync(
 
     private fun sync(entry: Bound) {
         if (disposed || entry.applying > 0) return
+        rebase(entry)
         if (viewer || entry.invalid) {
             if (entry.invalid) reports.divergence(entry.path)
             entry.invalid = false
@@ -468,6 +485,23 @@ class DocumentSync(
         entry.remote.clear()
         val room = replica.editorText(entry.path)
         if (land(entry, room.text, null)) entry.editor = room
+    }
+
+    /**
+     * Re-captures a bound document's editor basis when the replica adopted a different document.
+     *
+     * The malformed fallback and the last refusal are bound to the document that went, so both go
+     * with it; the document itself is reconciled against the new replica's text by the ordinary
+     * path below, whether that text is equal or not.
+     */
+    private fun rebase(entry: Bound) {
+        val identity = replica.replicaIdentity()
+        if (entry.identity === identity) return
+        entry.identity = identity
+        entry.editor = replica.editorText(entry.path)
+        entry.malformed = null
+        entry.refused = null
+        entry.remote.clear()
     }
 
     /**

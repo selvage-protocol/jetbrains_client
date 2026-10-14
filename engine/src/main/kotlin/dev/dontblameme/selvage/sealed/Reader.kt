@@ -28,6 +28,14 @@ class Verdict(
     val counter: Long? = null,
     val plaintext: ByteArray = ByteArray(0),
     val payload: Payload? = null,
+    /**
+     * The committed public key whose signature actually verified, when the frame carried content.
+     *
+     * Additive: [sender] stays the envelope's key id, and this is the full key behind it, so a
+     * caller that must attribute an accepted frame (the reciprocal census) never reads an id or
+     * the first candidate of a colliding id. Null on a refusal, which nothing accepted.
+     */
+    val verified: ByteArray? = null,
 ) {
     val ok: Boolean get() = reason == null
 }
@@ -85,7 +93,10 @@ class Reader(
 
     fun spellingOf(id: String): String? = byId[id]?.firstOrNull()?.spelling
 
-    fun roleOfKey(key: ByteArray): Role? = committed.values.firstOrNull { it.key.contentEquals(key) }?.role
+    fun roleOfKey(key: ByteArray): Role? = committedOf(key)?.role
+
+    /** The committed entry whose key is [key], whatever its id collides with. */
+    fun committedOf(key: ByteArray): Committed? = committed.values.firstOrNull { it.key.contentEquals(key) }
 
     fun read(frame: ByteArray): Verdict {
         val envelope = Envelope.parse(frame) ?: return Verdict(DropReason.BAD_ENVELOPE)
@@ -127,6 +138,7 @@ class Reader(
             return refused(DropReason.UNAUTHORISED_CONTENT, envelope)
         }
         if (kind == 0L || kind == 3L) advance(id, envelope.counter)
+        val attributed = if (kind == 0L) sender else null
         when (payload) {
             is Payload.State -> {
                 applyState(payload.state)
@@ -143,7 +155,7 @@ class Reader(
 
             else -> {}
         }
-        return Verdict(null, id, kind, envelope.counter, plaintext, payload)
+        return Verdict(null, id, kind, envelope.counter, plaintext, payload, attributed)
     }
 
     private fun readAnnouncement(envelope: Envelope): Verdict {

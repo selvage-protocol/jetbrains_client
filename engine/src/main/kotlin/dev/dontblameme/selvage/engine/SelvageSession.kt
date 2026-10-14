@@ -72,7 +72,12 @@ sealed interface SessionEvent {
         val attempt: Int,
     ) : SessionEvent
 
-    /** The people in the room, said again when one of their roles changes. */
+    /**
+     * The people in the room, said again when one of their roles changes. This connection's own
+     * role and the identity of the replica its editor basis is bound to are among the people's
+     * movement even when the per-seat map does not move: a viewer resolution replaces the key at a
+     * seat and adopts a clean replica, and the adapter has to re-capture its bases from it (§13.9).
+     */
     data class Peers(
         val peers: List<WirePeer>,
     ) : SessionEvent
@@ -147,6 +152,8 @@ class SessionOptions(
     val listener: SessionListener? = null,
     /** Where a caught error goes; the plugin backs it with the platform's logger. */
     val errors: ErrorSink = StderrErrorSink,
+    /** Test-only: see [dev.dontblameme.selvage.peer.PeerOptions.sealFault]. */
+    internal val sealFault: ((ByteArray) -> Boolean)? = null,
 )
 
 /** What a host serves: the names it grants, and a document's text when a peer opens one. */
@@ -217,6 +224,13 @@ class SelvageSession private constructor(
     private var lastOpen: List<String> = emptyList()
     private var lastPeers: List<WirePeer> = emptyList()
     private var lastRoles: Map<String, Role> = emptyMap()
+
+    /**
+     * This connection's own applied role and the identity of the replica it applies to, read
+     * beside the people so their movement is said even when the seat map alone does not move.
+     */
+    private var lastOwnRole: Role? = null
+    private var lastIdentity: Any? = null
     private var hostAway = false
     private val readOnce = HashSet<String>()
 
@@ -314,6 +328,15 @@ class SelvageSession private constructor(
 
     fun editorText(path: String): EditorText? = locked { peer?.editorText(path) }
 
+    /** Test-only: the peer behind this session, for a test that bounds automatic attempts. */
+    internal fun peerForTest(): PeerSession? = locked { peer }
+
+    /**
+     * The identity of the replica the session applies to, for an adapter that caches an editor
+     * basis bound to one document. It changes when a viewer resolution adopts a clean baseline.
+     */
+    fun docIdentity(): Any? = locked { peer?.docIdentity }
+
     /** Expected text, observed identities, and the actual merged file bound are checked under one lock. */
     fun commitEditorIf(
         path: String,
@@ -404,6 +427,7 @@ class SelvageSession private constructor(
                         awarenessClientId = awarenessId,
                         host = HostOptions(hostKey, content!!.listing),
                         recordFrames = false,
+                        sealFault = options.sealFault,
                     ),
                 )
                 invite = Invite.link(Urls.sessionUrl(base, info.roomId, token), roomKey, hostKey.public)
@@ -433,6 +457,7 @@ class SelvageSession private constructor(
                             declaredRole = declaredRole,
                             awarenessClientId = awarenessId,
                             recordFrames = false,
+                            sealFault = options.sealFault,
                         ),
                     )
                 }
@@ -527,7 +552,10 @@ class SelvageSession private constructor(
     ) {
         start = scheduler.nowMs()
         peerList = info.peers
-        peer = PeerSession(peerOptions)
+        val seated = PeerSession(peerOptions)
+        peer = seated
+        lastOwnRole = seated.ownRole()
+        lastIdentity = seated.docIdentity
         tickWindow = peerOptions.keepalive.awarenessRenewMs
         tickAt = tickWindow
         events.add(SessionEvent.Seated)
@@ -596,13 +624,19 @@ class SelvageSession private constructor(
 
     private fun drainInbox() {
         val session = peer ?: return
-        while (inbox.isNotEmpty() && !handshaking) {
-            val frame = inbox.removeFirst()
-            inboxBytes -= weight(frame)
-            when (frame) {
-                is ByteArray -> refused(session, session.deliver(clock(), frame))
-                is String -> event(session, frame)
+        try {
+            while (inbox.isNotEmpty() && !handshaking) {
+                val frame = inbox.removeFirst()
+                inboxBytes -= weight(frame)
+                when (frame) {
+                    is ByteArray -> refused(session, session.deliver(clock(), frame))
+                    is String -> event(session, frame)
+                }
             }
+        } finally {
+            // A state applied here can fail §13.6's step 6 request; stamp its completion on the
+            // clock before anything arms a deadline that is measured against it.
+            session.noteStep1Failure(clock())
         }
         afterChange()
     }
@@ -769,11 +803,15 @@ class SelvageSession private constructor(
         if (ending != null || left) return
         val now = clock()
         try {
-            session.tick(now)
+            session.autoTick(now)
             afterChange()
         } finally {
-            if (now >= tickAt) tickAt = now + tickWindow
-            arm(now)
+            // A tick or delivery that failed sealed nothing on the clock it started from: the
+            // owner reads the clock again after the work returned, then arms from that sample.
+            session.noteStep1Failure(clock())
+            val done = clock()
+            if (done >= tickAt) tickAt = done + tickWindow
+            arm(done)
         }
     }
 
@@ -807,9 +845,19 @@ class SelvageSession private constructor(
             events.add(SessionEvent.OpenSet(open))
         }
         // The roles are read beside the people, so a role that arrives after the people it names
-        // (the host's, once its signed state lands) says the people again.
+        // (the host's, once its signed state lands) says the people again. This connection's own
+        // role and the identity of the replica it applies to are read directly, not through the
+        // seat map: a signed state can replace the key at a seat without moving that map (§13.1,
+        // §13.4), and a viewer resolution adopts a clean replica whose text can be exactly what the
+        // bound editor already shows. A bound basis and its read-only lock name the replica that
+        // went, so either moves the adapter, not only a visible edit or an unrelated frame (§13.9).
         val roles = session.rolesBySeat()
-        if (peerList != lastPeers || roles != lastRoles) {
+        val ownRole = session.ownRole()
+        val identity = session.docIdentity
+        val localMoved = ownRole != lastOwnRole || identity !== lastIdentity
+        lastOwnRole = ownRole
+        lastIdentity = identity
+        if (peerList != lastPeers || roles != lastRoles || localMoved) {
             lastPeers = peerList
             lastRoles = roles
             events.add(SessionEvent.Peers(peerList))
