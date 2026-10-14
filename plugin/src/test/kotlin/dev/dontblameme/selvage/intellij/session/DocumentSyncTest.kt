@@ -30,8 +30,34 @@ class DocumentSyncTest : BasePlatformTestCase() {
         val texts = HashMap<String, String>()
         val held = HashSet<String>()
         val published = ArrayList<Editing.TextChange>()
-        val doc = Doc(clientID = 1)
+        var doc = Doc(clientID = 1)
         var snapshotCalls = 0
+
+        /** The identity the adapter compares to re-capture a bound editor basis. */
+        override fun replicaIdentity(): Any = doc
+
+        /**
+         * A different document whose visible text is the same but whose item pieces are rebuilt
+         * under a new client id, as a viewer resolution's visible outcome looks. It pins a different
+         * owner and equal text, not equal pieces; [adoptClonedEqualPieces] pins the pieces.
+         */
+        fun adoptEqualText() {
+            val next = Doc(clientID = 2)
+            for ((path, value) in texts) next.getText(path).insert(0, value)
+            doc = next
+        }
+
+        /**
+         * The engine adopts an encode/apply clone of the current document: the item pieces are the
+         * old document's own and only the owner is a different document, which is what a viewer
+         * resolution adopts. Where [adoptEqualText] reconstructs the text under a new client id,
+         * this pins the equal item pieces too.
+         */
+        fun adoptClonedEqualPieces() {
+            val next = Doc(clientID = 2)
+            Updates.applyUpdate(next, Updates.encodeStateAsUpdate(doc))
+            doc = next
+        }
 
         private fun ensureTexts() {
             for ((path, value) in texts) {
@@ -50,9 +76,17 @@ class DocumentSyncTest : BasePlatformTestCase() {
 
         var beforeCommit: (() -> Unit)? = null
 
+        /**
+         * Fires once, after a basis is captured and before [editorText] returns it, so a test can move
+         * the replica between an adapter's basis read and the identity read that follows it.
+         */
+        var afterBasisRead: (() -> Unit)? = null
+
         override fun editorText(path: String): EditorText {
             ensureTexts()
-            return EditorText.capture(doc, path)
+            val basis = EditorText.capture(doc, path)
+            afterBasisRead?.also { afterBasisRead = null }?.invoke()
+            return basis
         }
 
         override fun commitEditorIf(
@@ -534,6 +568,81 @@ class DocumentSyncTest : BasePlatformTestCase() {
 
     fun testQueuedSameVisibleTextIdentityRaceValidatesTheActualMergedBound() = sameTextIdentityRaceAtBound(true)
 
+    fun testACommitAfterTheReplicaAdoptsAnEqualTextDocumentIsAccepted() {
+        val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val guarded =
+            DocumentSync(
+                project,
+                replica,
+                object : DocumentSync.Reports {
+                    override fun divergence(path: String) {
+                        said.add("divergence $path")
+                    }
+
+                    override fun applyRefused(path: String) {
+                        said.add("applyRefused $path")
+                    }
+                },
+                testRootDisposable,
+                autoSave = { false },
+            )
+        val document = document("hello")
+        guarded.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        // A viewer resolution adopts a clean replica with the same visible text under a new owner.
+        replica.adoptEqualText()
+        guarded.syncAll()
+        assertEquals("the adopted replica holds the same text", "hello", replica.text("a.txt"))
+        assertEquals("hello", document.text)
+        // The old basis is not left to refuse the next keystroke.
+        type(document, 5, "!")
+        guarded.syncAll()
+        assertEquals("hello!", replica.text("a.txt"))
+        assertEquals("hello!", document.text)
+        assertEquals(1, replica.published.size)
+        assertEquals(emptyList<String>(), said)
+    }
+
+    fun testACommitAfterTheReplicaAdoptsACloneOfTheEqualTextDocumentIsAccepted() {
+        val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val guarded =
+            DocumentSync(
+                project,
+                replica,
+                object : DocumentSync.Reports {
+                    override fun divergence(path: String) {
+                        said.add("divergence $path")
+                    }
+
+                    override fun applyRefused(path: String) {
+                        said.add("applyRefused $path")
+                    }
+                },
+                testRootDisposable,
+                autoSave = { false },
+            )
+        val document = document("hello")
+        guarded.bind("a.txt", document, seed = true)
+        replica.published.clear()
+        val piecesBefore = Updates.encodeStateVector(replica.doc)
+        // A viewer resolution adopts an encode/apply clone: the old document's own pieces, a new owner.
+        replica.adoptClonedEqualPieces()
+        assertTrue(
+            "an encode/apply clone carries the old document's own item pieces",
+            Updates.encodeStateVector(replica.doc).contentEquals(piecesBefore),
+        )
+        guarded.syncAll()
+        assertEquals("the adopted replica holds the same text", "hello", replica.text("a.txt"))
+        assertEquals("hello", document.text)
+        // The old basis is not left to refuse the next keystroke.
+        type(document, 5, "!")
+        guarded.syncAll()
+        assertEquals("hello!", replica.text("a.txt"))
+        assertEquals("hello!", document.text)
+        assertEquals(1, replica.published.size)
+        assertEquals(emptyList<String>(), said)
+    }
+
     fun testSeparateQueuedCommandsAndRemoteReplacementsKeepTheirOperations() {
         val document = document("abcdefghij")
         sync.bind("a.txt", document, seed = true)
@@ -551,6 +660,58 @@ class DocumentSyncTest : BasePlatformTestCase() {
         sync.syncAll()
         assertEquals("late remote events are not echoed", published, replica.published.size)
         assertEquals("aBcd!?fghIj", document.text)
+    }
+
+    fun testAnAdoptionDuringBindDoesNotLabelTheOldBasisWithTheAdoptedOwner() {
+        val said = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val guarded =
+            DocumentSync(
+                project,
+                replica,
+                object : DocumentSync.Reports {
+                    override fun divergence(path: String) {
+                        said.add("divergence $path")
+                    }
+
+                    override fun applyRefused(path: String) {
+                        said.add("applyRefused $path")
+                    }
+                },
+                testRootDisposable,
+                autoSave = { false },
+            )
+        replica.texts["a.txt"] = "hello"
+        val document = document("hello")
+        // The ordinary document already holds the room's text when the resolution arrives.
+        replica.editorText("a.txt")
+        val piecesBefore = Updates.encodeStateVector(replica.doc)
+        // A viewer resolution adopts an encode/apply clone of the ordinary document exactly while
+        // bind captures the old basis, before it reads the identity: the socket thread's interleaving.
+        replica.afterBasisRead = { replica.adoptClonedEqualPieces() }
+        guarded.bind("a.txt", document, seed = false)
+        assertTrue(
+            "an encode/apply clone carries the old document's own item pieces",
+            Updates.encodeStateVector(replica.doc).contentEquals(piecesBefore),
+        )
+        assertEquals("the adopted replica holds the same visible text", "hello", replica.text("a.txt"))
+        // The adoption's queued notification drains through bind's own redraw, and the resolution
+        // resolves the seat as VIEWER, so the bound document is read-only.
+        guarded.syncAll()
+        guarded.viewer = true
+        assertEquals("hello", document.text)
+        assertFalse("a viewer's document refuses a keystroke", document.isWritable)
+        // A later promotion to GUEST keeps the adopted owner, and the sync lifts the lock.
+        val owner = replica.doc
+        guarded.viewer = false
+        assertTrue(document.isWritable)
+        assertTrue("the promotion does not replace the adopted owner", replica.doc === owner)
+        // The next keystroke commits to the adopted replica rather than being refused and lost.
+        type(document, 5, "!")
+        guarded.syncAll()
+        assertEquals("hello!", replica.text("a.txt"))
+        assertEquals("hello!", document.text)
+        assertEquals(1, replica.published.size)
+        assertEquals(emptyList<String>(), said)
     }
 
     fun testQueuedEditsCanReplaceTextInsertedByAnEarlierQueuedEdit() {

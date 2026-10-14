@@ -111,6 +111,12 @@ class PeerOptions(
     val host: HostOptions? = null,
     val recordFrames: Boolean = true,
     val frameBudget: Long = HostProducer.FRAME_BUDGET,
+    /**
+     * Test-only: makes the frames a predicate names fail to seal (§6.1), as a provider that
+     * cannot seal does. The attempt still spends its counter and room-frame budget and queues
+     * nothing, which is what a test needs to drive a persistent publication failure.
+     */
+    internal val sealFault: ((ByteArray) -> Boolean)? = null,
 )
 
 /**
@@ -133,13 +139,25 @@ class PeerSession(
     private val expire = options.keepalive.awarenessExpireMs
     private val recordFrames = options.recordFrames
     private val frameBudget = options.frameBudget
+    private val sealFault = options.sealFault
     var seat: String? = options.seat
         private set
     private var roster: MutableSet<String> = LinkedHashSet(options.roster)
     private val host: HostProducer? =
         options.host?.let { HostProducer(roomId, frameKey, renew, it.hostKey, it.listing) }
 
-    private val doc = Doc()
+    /**
+     * The session replica. An ordinary session has one document; a viewer resolution adopts the
+     * clean UNKNOWN-role [baseline] instead, so nothing here keeps a permanent pair.
+     */
+    private var doc = Doc()
+
+    /** A clone taken before the first UNKNOWN-role local edit, so a viewer resolution can adopt it. */
+    private var baseline: Doc? = null
+    private val publicationDoc: Doc get() = baseline ?: doc
+
+    /** The token an adapter compares; a viewer resolution replaces it with the adopted replica. */
+    private var identity: Any = Any()
     private var clockOfLastMove = 0L
     private val awareness = newAwareness(options.awarenessClientId ?: Doc.randomClientId(kotlin.random.Random))
     private var localState: YAny.Obj? = null
@@ -166,10 +184,53 @@ class PeerSession(
     private var announcedAt: Long? = null
     private var resyncFrom: Long? = null
     private var handshakenAt: Long? = null
+
+    /**
+     * The committed writer keys whose first accepted `SyncStep1` this connection has answered with
+     * a request of its own, by canonical key spelling.
+     *
+     * One entry per continuous writer eligibility: a duplicate or later request from a key already
+     * here arms nothing, and a state that revokes or demotes the key prunes it so a later promotion
+     * can arm once more. This is what stops the reciprocal request from echoing for ever.
+     */
+    private val reciprocalServed = HashSet<String>()
+
+    /**
+     * The committed writer keys whose reciprocal request is owed and not yet on the wire.
+     *
+     * Per key, so that a state which revokes or demotes one of them retires just that cause and
+     * leaves a refusal, local readiness or another still-pending writer's request standing (§13.6).
+     */
+    private val reciprocalPending = LinkedHashSet<String>()
+
+    /** Whether this key's own initial `SyncStep1` is owed because the first attempt did not queue. */
+    private var initialPending = false
+
+    /** Readiness owed for this local key's renewed continuous writer eligibility. */
+    private var localReadinessPending = false
+
+    /** The role the last applied state gave this connection's own key, for continuous eligibility. */
+    private var roleSeen: Role? = null
+
+    /**
+     * The clock at which the last authored `SyncStep1` attempt failed to queue, if any.
+     *
+     * §13.6's shared clock advances only on a successful request, so a refused attempt leaves the
+     * obligations in place — but an automatic retry must not ride the same overdue deadline it
+     * would have had before the attempt: that is a wakeup every millisecond, not one per renewal
+     * interval. The owning session stamps this with the clock it reads after the attempt returned,
+     * so a synchronous seal that took real time is not credited with zero elapsed time. This is
+     * the later floor the automatic path waits out, and it is cleared by a success and by a
+     * fresh-key re-seat.
+     */
+    private var failedStep1At: Long? = null
+
+    /** Whether an attempt failed since the last stamp, which the owner's next note settles. */
+    private var step1FailurePending = false
     private var stateIssued: Long? = null
     private var hostAwaySince: Long? = null
     private var roomFrames = 0L
-    private val unsent = ArrayList<ByteArray>()
+    private val unsent = ArrayList<Held>()
     private var heldStateFrame: ByteArray? = null
     private val observed = HashSet<String>()
     private val edits = ArrayList<RemoteEdit>()
@@ -206,9 +267,30 @@ class PeerSession(
     val listing: List<String> get() = reader.listing
     val awarenessClientId: Long get() = awareness.clientID
 
+    /**
+     * An opaque token for the replica this session applies to, for an adapter whose cached editor
+     * basis is bound to one document. It changes exactly when a viewer resolution adopts the
+     * baseline, which is the moment a bound editor's own basis goes stale even when its text is
+     * equal. Nothing mutable is handed out: the adapter only compares tokens.
+     */
+    internal val docIdentity: Any get() = identity
+
     fun stateHeld(): Boolean = stateIssued != null
 
     fun heldPaths(): List<String> = held.toList()
+
+    /** The committed writer spellings this connection has already owed a reciprocal request. */
+    internal fun reciprocalCensus(): Set<String> = reciprocalServed.toSet()
+
+    /** The applied replica's state vector, for a test that asserts two peers converged. */
+    internal fun stateVector(): ByteArray = Updates.encodeStateVector(doc)
+
+    /** Every authored `SyncStep1` this connection attempted, queued or not, for a test's bound. */
+    internal var step1Attempts = 0
+        private set
+
+    /** The clock the owning session stamped for the last failed `SyncStep1` attempt, if any. */
+    internal val step1FailureAt: Long? get() = failedStep1At
 
     /** What each committed peer holds, keyed by its key spelling (§13.7). */
     fun peerHolds(): Map<String, List<String>> =
@@ -314,7 +396,7 @@ class PeerSession(
             }
 
             Payload.Content -> {
-                applyContent(verdict.plaintext)
+                applyContent(verdict.plaintext, verdict.verified)
             }
 
             null -> {}
@@ -329,8 +411,27 @@ class PeerSession(
         host?.verifiedState(issued)
         refreshHostAway(clock, restart = true)
         dropDepartedHolds()
+        pruneReciprocal()
+        val role = ownRole()
+        if (role == Role.HOST || role == Role.GUEST) {
+            // §13.6: an already-handshaken local key that re-enters writer commitment after a
+            // viewer or an absence owes one coalesced readiness request. A first commitment uses
+            // the immediate initial handshake instead, and an uninterrupted writer owes nothing.
+            if (handshakenAt != null && roleSeen != Role.HOST && roleSeen != Role.GUEST) {
+                localReadinessPending = true
+            }
+        } else {
+            localReadinessPending = false
+        }
+        roleSeen = role
         if (commitsOurs()) {
-            if (handshakenAt == null) syncStep1(clock)
+            // §13.9's clean history is adopted before any request or reply is encoded.
+            if (role == Role.VIEWER) {
+                discardSpeculative()
+            } else if (role == Role.HOST || role == Role.GUEST) {
+                acceptSpeculation()
+            }
+            if (handshakenAt == null) initialHandshake(clock)
             flushHeldBackEdits()
             flushHeldBackAwareness()
             announceHolds(clock)
@@ -339,32 +440,148 @@ class PeerSession(
         }
     }
 
-    private fun applyContent(plaintext: ByteArray) {
-        if (!stateHeld()) return
-        val messages =
-            try {
-                Sync.decode(plaintext)
-            } catch (e: DecodeException) {
-                return
-            }
-        val before = doc.rootNames.toSet()
-        val replies = ArrayList<ByteArray>()
+    /**
+     * Retires the census and pending entries for keys the applied state no longer commits as
+     * writers.
+     *
+     * §13.3 replaces the room's keys wholesale, so a revoked or demoted key is no longer eligible
+     * and a later promotion may arm one request again; a key that stays continuously committed
+     * keeps its served mark, which is what stops a duplicate or later request from re-arming. A
+     * key that loses eligibility owes nothing, so its pending request goes with the mark — and
+     * only that key's, leaving a refusal, local readiness or another writer's request standing.
+     */
+    private fun pruneReciprocal() {
+        fun eligible(spelling: String): Boolean {
+            val entry = reader.committed[spelling] ?: return false
+            return entry.role == Role.HOST || entry.role == Role.GUEST
+        }
+        reciprocalServed.removeAll { !eligible(it) }
+        reciprocalPending.removeAll { !eligible(it) }
+    }
+
+    /**
+     * Runs the first request a newly committed key owes, retaining the obligation when the attempt
+     * neither queues nor returns.
+     *
+     * §13.6's step 6 request is owed whether the seal refused it or threw: a real JCA, randomness
+     * or signing fault is reported to the caller as it happened, and the obligation stays for the
+     * automatic path to serve inside the paced window rather than being lost with the exception.
+     */
+    private fun initialHandshake(clock: Long) {
         try {
-            for (message in messages) {
+            if (!syncStep1(clock)) initialPending = true
+        } catch (e: Exception) {
+            initialPending = true
+            throw e
+        }
+    }
+
+    /**
+     * Arms one reciprocal request for the first accepted `SyncStep1` from a continuously committed
+     * writer key.
+     *
+     * §13.1's step 6 asks the room for what this replica lacks; a peer's own request is evidence
+     * that it has applied a committing state and can answer, so answering it with our own request
+     * makes the exchange reciprocal. A request from a `viewer` is not one: a viewer sends no
+     * content, so reciprocating would solicit nothing. The obligation belongs to the sending key's
+     * eligibility, not this connection's: one armed while this key cannot publish is retained and
+     * served when publication becomes possible and the clock is due (§13.6).
+     */
+    private fun armReciprocal(verified: ByteArray?) {
+        val key = verified ?: return
+        val entry = reader.committedOf(key) ?: return
+        if (entry.role != Role.HOST && entry.role != Role.GUEST) return
+        if (!reciprocalServed.add(entry.spelling)) return
+        reciprocalPending.add(entry.spelling)
+    }
+
+    /**
+     * Takes the clean baseline before the first UNKNOWN-role local edit.
+     *
+     * A clone by encode/apply is a document of its own, never a store alias, and it keeps the
+     * accepted pending structs and delete sets the ordinary replica holds; one baseline serves
+     * every speculative keystroke until the role resolves.
+     */
+    private fun beginSpeculation() {
+        if (baseline != null) return
+        baseline = Doc().also { Updates.applyUpdate(it, Updates.encodeStateAsUpdate(doc)) }
+    }
+
+    /** Destroys the baseline: the applied state resolved this key as a writer. */
+    private fun acceptSpeculation() {
+        baseline = null
+        for (entry in unsent) entry.speculative = false
+    }
+
+    /**
+     * Adopts the clean baseline after a viewer resolution, dropping the speculative local edits.
+     *
+     * The ordinary replica is replaced, so every observer moves with it, and a private selection
+     * that no longer resolves in the adopted document is republished without one (§8.1).
+     */
+    private fun discardSpeculative() {
+        unsent.removeAll { it.speculative }
+        val next = baseline ?: return
+        baseline = null
+        doc = next
+        identity = Any()
+        observed.clear()
+        for (path in doc.rootNames) observe(path)
+        // Deltas computed against the discarded replica would name positions it no longer holds;
+        // an adapter reconciles from the adopted text instead.
+        edits.clear()
+        dropUnresolvedSelection()
+    }
+
+    /**
+     * §8.1: a private selection whose anchors do not resolve in the adopted document is published
+     * without one, rather than left naming a position the replica no longer holds.
+     */
+    private fun dropUnresolvedSelection() {
+        val state = localState ?: return
+        val obj = state as? YAny.Obj ?: return
+        if (obj["selection"] == null) return
+        if (AwarenessState.resolve(awareness.clientID, state, doc).selection != null) return
+        val path = (obj["path"] as? YAny.Str)?.value ?: return
+        setCursor(path)
+    }
+
+    private fun applyContent(
+        plaintext: ByteArray,
+        verified: ByteArray?,
+    ) {
+        if (!stateHeld()) return
+        // §13.9: a viewer publishes its SyncStep1, awareness and holds, and nothing else — a
+        // SyncStep2 is document content (§13.5) and is not its to send. An uncommitted key is the
+        // same: nothing it would answer with is publishable yet.
+        val answers = mayPublish() && ownRole() != Role.VIEWER
+        var requested = false
+        val replies = ArrayList<ByteArray>()
+        val before = doc.rootNames.toSet()
+        try {
+            // One walk, message by message, over one validated prefix applied to both replicas: a
+            // malformed suffix stops it for both, so the speculative and the ordinary document
+            // never disagree about which of the frame's messages were accepted (§13.6).
+            Sync.read(plaintext) { message ->
                 when (message) {
                     is SyncMessage.Step1 -> {
-                        if (replies.size < MAX_REPLIES_PER_FRAME) {
-                            val diff = Updates.encodeStateAsUpdate(doc, message.stateVector)
+                        // Read and past the request whatever the cap did with it, and refuse a
+                        // malformed inner vector rather than allocate a room-sized diff for it.
+                        if (!answers || replies.size >= MAX_REPLIES_PER_FRAME) {
+                            Updates.decodeStateVector(message.stateVector)
+                        } else {
+                            val diff = Updates.encodeStateAsUpdate(publicationDoc, message.stateVector)
                             replies.add(Sync.encode(SyncMessage.Step2(diff)))
                         }
+                        requested = true
                     }
 
                     is SyncMessage.Step2 -> {
-                        Updates.applyUpdate(doc, message.update, APPLIED)
+                        applyContentUpdate(message.update)
                     }
 
                     is SyncMessage.Update -> {
-                        Updates.applyUpdate(doc, message.update, APPLIED)
+                        applyContentUpdate(message.update)
                     }
 
                     is SyncMessage.Awareness -> {
@@ -374,13 +591,27 @@ class PeerSession(
                     else -> {}
                 }
             }
+        } catch (e: DecodeException) {
+            // A malformed suffix ends the walk; what the valid prefix applied and asked for stands.
         } catch (e: RuntimeException) {
-            return
-        } finally {
-            observeNew(before)
+            // The same for a reader that failed some other way.
         }
-        if (ownRole() == Role.VIEWER || !commitsOurs()) return
+        observeNew(before)
+        if (requested) armReciprocal(verified)
+        if (!answers) return
         for (reply in replies) publish(Publication.SYNC, reply)
+    }
+
+    /**
+     * Applies one accepted content message to the publication replica and, while a viewer's own
+     * edits are still speculative, to the ordinary replica too: the same content has to reach the
+     * document a writer promotion keeps and the clean baseline a viewer resolution adopts (§13.9).
+     * A clone by encode/apply is a document of its own, never a store alias, so both are updated.
+     */
+    private fun applyContentUpdate(update: ByteArray) {
+        val publication = publicationDoc
+        Updates.applyUpdate(publication, update, APPLIED)
+        if (publication !== doc) Updates.applyUpdate(doc, update, APPLIED)
     }
 
     /** Roots a remote update created were not observed while it ran: they arrive whole. */
@@ -411,7 +642,7 @@ class PeerSession(
 
     // --- the clock --------------------------------------------------------------
 
-    /** The soonest clock at which [tick] has something due, other than the renewal window. */
+    /** The soonest clock at which a tick has something due, other than the renewal window. */
     fun nextDeadline(): Long? {
         if (ending != null || detached) return null
         var soonest = host?.owedAt()
@@ -420,10 +651,42 @@ class PeerSession(
             val due = at + renew
             if (soonest == null || due < soonest) soonest = due
         }
+        // A refusal, an initial or reciprocal request and local readiness share one successful
+        // request clock: the deadline is the earliest a coalesced `SyncStep1` becomes due, so a
+        // request that lands inside a window does not wait a whole one for it.
+        if (mayPublish() && hasRepair()) {
+            // The later of the successful-request eligibility and a failed attempt's own cooldown.
+            val due = maxOf(handshakenAt ?: 0L, failedStep1At ?: 0L) + renew
+            if (soonest == null || due < soonest) soonest = due
+        }
         return soonest
     }
 
-    fun tick(clock: Long) {
+    /** Whether a refuse, initial, reciprocal or readiness cause still owes a `SyncStep1`. */
+    private fun hasRepair(): Boolean =
+        resyncFrom != null || initialPending || reciprocalPending.isNotEmpty() || localReadinessPending
+
+    /**
+     * The session's own clocks, as a caller driving them by hand runs them.
+     *
+     * An obligation left owed by a failed `SyncStep1` is retried at once once the shared request
+     * clock is due: a caller that owns the clock keeps the immediate retry §13.6 allows.
+     */
+    fun tick(clock: Long) = tickOne(clock, automatic = false)
+
+    /**
+     * One tick as this connection's own timer runs it.
+     *
+     * It differs from [tick] in one way: a repair request left owed by a failed `SyncStep1`
+     * publication waits a renewal window from the attempt's completion, so a persistent seal
+     * failure draws one automatic attempt a window rather than one per pump.
+     */
+    fun autoTick(clock: Long) = tickOne(clock, automatic = true)
+
+    private fun tickOne(
+        clock: Long,
+        automatic: Boolean,
+    ) {
         clockOfLastMove = clock
         expireLeases(clock)
         refreshHostAway(clock, restart = false)
@@ -432,10 +695,25 @@ class PeerSession(
         if (windowPassed(clock)) return
         publishState(clock, HostReason.ANNOUNCEMENT)
         reannounce(clock)
-        resync(clock)
+        resync(clock, automatic)
         announceHolds(clock)
         renewAwareness(clock)
         awareness.tick()
+    }
+
+    /**
+     * Stamps the clock at which a failed `SyncStep1` publication completed.
+     *
+     * A synchronous seal throws or refuses on the calling thread, so the owner reads its monotone
+     * clock after the tick or delivery returned: the clock the operation was given is the moment
+     * it started, and encoding, randomness, JCA sealing or a preceding serialized operation can
+     * leave it older than a renewal window. A no-op when no attempt failed, and it never refunds
+     * the counter or the reserved room frame count.
+     */
+    internal fun noteStep1Failure(clock: Long) {
+        if (!step1FailurePending) return
+        step1FailurePending = false
+        failedStep1At = clock
     }
 
     private fun renewAwareness(clock: Long) {
@@ -501,6 +779,16 @@ class PeerSession(
         announcedAt = null
         handshakenAt = null
         resyncFrom = null
+        // §9.1: the reciprocal census and the readiness obligation belong to the connection, not
+        // the replica — a fresh key starts eligible again, and the marks the receiver keeps for
+        // room frames, the replica and the paths this connection holds are untouched.
+        reciprocalServed.clear()
+        reciprocalPending.clear()
+        initialPending = false
+        localReadinessPending = false
+        failedStep1At = null
+        step1FailurePending = false
+        roleSeen = null
         holdsAnnouncedAt = null
         ending = null
     }
@@ -542,6 +830,10 @@ class PeerSession(
         index: Int,
         text: String,
     ): Boolean {
+        // Refuse before creating CRDT history a later promotion could export (§13.9).
+        if (ownRole() == Role.VIEWER) return false
+        val speculative = ownRole() == null
+        if (speculative) beginSpeculation()
         val publishing = text.isEmpty() && path !in doc.rootNames
         val update =
             editLocally(path) { handle ->
@@ -556,7 +848,7 @@ class PeerSession(
                     handle.insert(index, text)
                 }
             }
-        return publishEdit(update)
+        return publishEdit(update, speculative)
     }
 
     fun delete(
@@ -564,6 +856,9 @@ class PeerSession(
         index: Int,
         length: Int,
     ): Boolean {
+        if (ownRole() == Role.VIEWER) return false
+        val speculative = ownRole() == null
+        if (speculative) beginSpeculation()
         val update =
             editLocally(path) { handle ->
                 if (index < 0 || length < 0 || index + length > handle.length) {
@@ -571,7 +866,7 @@ class PeerSession(
                 }
                 handle.delete(index, length)
             }
-        return publishEdit(update)
+        return publishEdit(update, speculative)
     }
 
     fun editorText(path: String): EditorText = EditorText.capture(doc, path)
@@ -583,11 +878,13 @@ class PeerSession(
         maxBytes: Int,
     ): EditorCommit {
         if (path != editor.path || ownRole() == Role.VIEWER) return EditorCommit.Refused
+        val speculative = ownRole() == null
+        if (speculative) beginSpeculation()
         val (refusal, plan) = editor.plan(doc, expected, maxBytes)
         if (refusal != null) return refusal
         var visible: EditorText? = null
         val update = editLocally(path) { visible = plan!!.apply(doc) }
-        publishEdit(update)
+        publishEdit(update, speculative)
         return EditorCommit.Applied(EditorText.capture(doc, path), visible!!)
     }
 
@@ -607,13 +904,18 @@ class PeerSession(
         return if (captured.isEmpty()) null else Updates.mergeUpdates(captured)
     }
 
-    private fun publishEdit(update: ByteArray?): Boolean {
+    /** Puts one local edit's update on the wire, or holds it back (§13.1's step 4). */
+    private fun publishEdit(
+        update: ByteArray?,
+        speculative: Boolean,
+    ): Boolean {
         if (update == null) return false
-        if (!mayPublish() || ownRole() == Role.VIEWER) {
-            if (ownRole() != Role.VIEWER) unsent.add(update)
-            return false
-        }
-        publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(update)))
+        val entry = Held(update, speculative)
+        unsent.add(entry)
+        if (!mayPublish() || ownRole() == Role.VIEWER) return false
+        acceptSpeculation()
+        if (!publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(update)))) return false
+        unsent.remove(entry)
         return true
     }
 
@@ -690,16 +992,21 @@ class PeerSession(
 
     /** One awareness frame for [clients], with §8.2's renewal clock re-based on it. */
     private fun publishAwareness(clients: Collection<Long>) {
-        publish(Publication.CONTENT, Sync.encode(SyncMessage.Awareness(awareness.encodeUpdate(clients))))
-        awarenessRenewedAt = clockOfLastMove
+        val frame = Sync.encode(SyncMessage.Awareness(awareness.encodeUpdate(clients)))
+        if (publish(Publication.CONTENT, frame)) awarenessRenewedAt = clockOfLastMove
     }
 
     private fun flushHeldBackEdits() {
-        if (unsent.isEmpty()) return
-        val merged = Updates.mergeUpdates(ArrayList(unsent))
+        if ((ownRole() != Role.HOST && ownRole() != Role.GUEST) || unsent.isEmpty()) return
+        val held = ArrayList(unsent)
         unsent.clear()
-        if (ownRole() == Role.VIEWER) return
-        publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(merged)))
+        val merged = Updates.mergeUpdates(held.map { it.update })
+        acceptSpeculation()
+        if (!mayPublish()) {
+            unsent.addAll(held)
+            return
+        }
+        if (!publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(merged)))) unsent.addAll(0, held)
     }
 
     /**
@@ -729,8 +1036,11 @@ class PeerSession(
 
     private fun announce(clock: Long) {
         if (host != null) return
-        publish(Publication.ANNOUNCEMENT, Payload.announcement(session.spelling, declaredRole))
-        announcedAt = clock
+        // The renewal clock is only re-based on a frame that actually queued: a refused
+        // announcement stays owed, and the next tick tries again.
+        if (publish(Publication.ANNOUNCEMENT, Payload.announcement(session.spelling, declaredRole))) {
+            announcedAt = clock
+        }
     }
 
     private fun reannounce(clock: Long) {
@@ -746,7 +1056,7 @@ class PeerSession(
         val at = holdsAnnouncedAt
         val due = paths != holdsSent || at == null || clock - at >= renew
         if (!due) return
-        publish(Publication.HOLDS, Payload.holds(paths))
+        if (!publish(Publication.HOLDS, Payload.holds(paths))) return
         holdsSent = paths
         holdsAnnouncedAt = clock
     }
@@ -834,19 +1144,66 @@ class PeerSession(
         return false
     }
 
-    private fun syncStep1(clock: Long) {
-        publish(Publication.SYNC, Sync.encode(SyncMessage.Step1(Updates.encodeStateVector(doc))))
+    /**
+     * §13.1's step 6: a `SyncStep1` with this replica's state vector.
+     *
+     * The vector is the publication replica's: §13.9 keeps a viewer's own history out of it, so
+     * the room is asked for what the room-safe history lacks. The successful-request clock and
+     * every obligation are only consumed when the frame actually queued.
+     */
+    private fun syncStep1(clock: Long): Boolean {
+        step1Attempts += 1
+        val queued =
+            try {
+                publish(Publication.SYNC, Sync.encode(SyncMessage.Step1(Updates.encodeStateVector(publicationDoc))))
+            } catch (e: Exception) {
+                // A seal that throws is a failed attempt like a refused one: the owner stamps its
+                // completion, and the caller still sees the fault.
+                step1FailurePending = true
+                throw e
+            }
+        if (!queued) {
+            step1FailurePending = true
+            return false
+        }
         handshakenAt = clock
+        resyncFrom = null
+        reciprocalPending.clear()
+        initialPending = false
+        localReadinessPending = false
+        failedStep1At = null
+        step1FailurePending = false
+        return true
     }
 
-    private fun resync(clock: Long) {
-        if (resyncFrom == null || !mayPublish()) return
+    /**
+     * Refusal, initial, reciprocal and local readiness obligations share the successful request
+     * clock: at most one locally generated `SyncStep1` per renewal interval, whichever asked for
+     * it.
+     *
+     * An automatic tick additionally waits out a failed attempt's cooldown, measured from its
+     * completion, so the ordinary renewal grid cannot preempt it; a caller driving the clocks by
+     * hand keeps the immediate retry §13.6 allows.
+     */
+    private fun resync(
+        clock: Long,
+        automatic: Boolean,
+    ) {
+        if (!hasRepair() || !mayPublish()) return
         val at = handshakenAt
-        if (at == null || clock - at >= renew) {
-            resyncFrom = null
-            syncStep1(clock)
-        }
+        val due = at == null || clock - at >= renew
+        // An automatic attempt also waits while a failure the owning session has not stamped yet
+        // is outstanding: an unstamped failure carries no completion moment to pace from.
+        val stamped = failedStep1At?.let { clock - it >= renew } ?: true
+        val paced = !automatic || (!step1FailurePending && stamped)
+        if (due && paced) syncStep1(clock)
     }
+
+    /** One local edit held while §13.1's step 4 keeps this connection from publishing it. */
+    private class Held(
+        val update: ByteArray,
+        var speculative: Boolean,
+    )
 
     private enum class Publication(
         val kind: Long,
@@ -857,15 +1214,26 @@ class PeerSession(
         SYNC(0),
     }
 
+    /**
+     * One frame sealed under the frame key and signed by this connection's session key.
+     *
+     * The attachment, session-life, commitment/content and budget gates all apply here, and the
+     * counter and room-frame budget are spent before the frame is queued, so a refused publication
+     * returns false without consuming anything and never reuses a counter. There is no
+     * asynchronous sealing here, so a canceled seal cannot replay a reserved frame either.
+     */
     private fun publish(
         what: Publication,
         plaintext: ByteArray,
-    ) {
-        if (ending != null || roomFrames >= frameBudget) return
+    ): Boolean {
+        if (detached || ending != null || roomFrames >= frameBudget) return false
+        if (what != Publication.ANNOUNCEMENT && !mayPublish()) return false
         counter += 1
-        outbound.add(Frames.seal(roomId, frameKey, what.kind, counter, session, plaintext))
         countFrame()
+        if (sealFault?.invoke(plaintext) == true) return false
+        outbound.add(Frames.seal(roomId, frameKey, what.kind, counter, session, plaintext))
         if (what == Publication.SYNC) handshake += 1 else published += 1
+        return true
     }
 
     companion object {

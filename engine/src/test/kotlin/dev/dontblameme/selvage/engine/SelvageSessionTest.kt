@@ -1,21 +1,37 @@
 package dev.dontblameme.selvage.engine
 
+import dev.dontblameme.selvage.crdt.Doc
 import dev.dontblameme.selvage.crdt.EditorCommit
+import dev.dontblameme.selvage.crdt.Sync
+import dev.dontblameme.selvage.crdt.SyncMessage
 import dev.dontblameme.selvage.crdt.TextDelta
+import dev.dontblameme.selvage.crdt.Updates
 import dev.dontblameme.selvage.peer.RemoteEdit
 import dev.dontblameme.selvage.peer.Selection
 import dev.dontblameme.selvage.sealed.Bytes
 import dev.dontblameme.selvage.sealed.DropReason
+import dev.dontblameme.selvage.sealed.Envelope
+import dev.dontblameme.selvage.sealed.FrameCrypto
 import dev.dontblameme.selvage.sealed.Frames
 import dev.dontblameme.selvage.sealed.Invite
+import dev.dontblameme.selvage.sealed.Payload
+import dev.dontblameme.selvage.sealed.PeerEntry
 import dev.dontblameme.selvage.sealed.Role
+import dev.dontblameme.selvage.sealed.RoomState
 import dev.dontblameme.selvage.sealed.SessionKey
+import dev.dontblameme.selvage.sealed.Urls
 import dev.dontblameme.selvage.wire.Meta
+import dev.dontblameme.selvage.wire.Seating
+import dev.dontblameme.selvage.wire.ServerMessage
 import dev.dontblameme.selvage.wire.SocketListener
 import dev.dontblameme.selvage.wire.Wire
+import dev.dontblameme.selvage.wire.WirePeer
+import dev.dontblameme.selvage.wire.WireSocket
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
+import java.security.GeneralSecurityException
+import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,10 +39,157 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.fail
+
+/**
+ * A viewer's room a signed key replacement can be injected into: the bare relay connections the
+ * states are sealed from, and the keys they are sealed with.
+ *
+ * The host key is this test's own, named by the invite, rather than a seated host's. That is what
+ * lets the states replace the key at a seat while holding the seat-to-role map still, which no
+ * ordinary host publishes: its own key is the one its room state commits.
+ */
+private class KeptRoom(
+    val guest: SelvageSession,
+    val host: RawPeer,
+    val writer: RawPeer,
+    val roomId: String,
+    val roomKey: ByteArray,
+    val frameKey: ByteArray,
+    val hostKey: SessionKey,
+    val writerKey: SessionKey,
+    val foreignViewerKey: SessionKey,
+    val hostSeat: String,
+    val writerSeat: String,
+    val seat: String,
+)
+
+/** A state committing [hostKey], [writerKey] and a viewer spelling at [KeptRoom.seat]. */
+private fun KeptRoom.state(
+    issued: Long,
+    counter: Long,
+    viewerSpelling: String,
+): ByteArray {
+    val peers = LinkedHashMap<String, PeerEntry>()
+    peers[hostKey.spelling] = PeerEntry(hostSeat, Role.HOST)
+    peers[writerKey.spelling] = PeerEntry(writerSeat, Role.GUEST)
+    peers[viewerSpelling] = PeerEntry(seat, Role.VIEWER)
+    return Frames.seal(
+        roomId,
+        frameKey,
+        1,
+        counter,
+        hostKey,
+        RoomState(issued, listOf("README.md"), peers).encode(),
+    )
+}
+
+/** The state whose viewer at [KeptRoom.seat] is a foreign key, not the viewer's own. */
+private fun KeptRoom.foreign(
+    issued: Long,
+    counter: Long,
+): ByteArray = state(issued, counter, foreignViewerKey.spelling)
+
+/** The state that replaces the foreign key with the viewer's own announced key, same seat and role. */
+private fun KeptRoom.rekeyed(
+    issued: Long,
+    counter: Long,
+): ByteArray = state(issued, counter, announcedKey(host.frames, roomId, frameKey))
+
+/** A legitimate content frame from the committed writer, putting [text] in README.md. */
+private fun KeptRoom.roomText(text: String): ByteArray =
+    Frames.seal(
+        roomId,
+        frameKey,
+        0,
+        1,
+        writerKey,
+        Sync.encode(
+            SyncMessage.Update(
+                Updates.encodeStateAsUpdate(Doc(9).also { it.getText("README.md").insert(0, text) }),
+            ),
+        ),
+    )
+
+/** The key spelling the first `kind = 4` announcement in [frames] carries. */
+private fun announcedKey(
+    frames: List<ByteArray>,
+    roomId: String,
+    frameKey: ByteArray,
+): String {
+    for (frame in frames) {
+        val envelope = Envelope.parse(frame) ?: continue
+        if (envelope.kind != 4L) continue
+        val plaintext = Frames.opens(roomId, frameKey, envelope) ?: continue
+        val announcement = Payload.readAnnouncement(plaintext) ?: continue
+        return announcement.key
+    }
+    fail("no announcement among ${frames.size} frames")
+}
+
+/** The room facts a signed key replacement must leave still: neither the seat map nor the text says them. */
+private data class RoomFacts(
+    val peers: List<WirePeer>,
+    val listing: List<String>,
+    val holds: List<String>,
+)
+
+private fun SelvageSession.facts(): RoomFacts = RoomFacts(peers(), listing(), openSet())
+
+/** A bare `selvage/2` connection: the room's owner and writer, sending only frames a test builds. */
+private class RawPeer(
+    relay: FakeRelay,
+    url: String,
+) {
+    val heard = CopyOnWriteArrayList<String>()
+    val frames = CopyOnWriteArrayList<ByteArray>()
+
+    private val socket: WireSocket =
+        relay
+            .open(
+                url,
+                Duration.ofSeconds(1),
+                object : SocketListener {
+                    override fun onText(text: String) {
+                        heard.add(text)
+                    }
+
+                    override fun onBinary(bytes: ByteArray) {
+                        frames.add(bytes.copyOf())
+                    }
+
+                    override fun onClose(
+                        code: Int,
+                        reason: String,
+                    ) {}
+                },
+            ).get(1, TimeUnit.SECONDS)
+
+    /** Says `session.hello` and returns the seat the relay answered with. */
+    fun hello(
+        relay: FakeRelay,
+        name: String,
+        awareness: Long,
+    ): Seating {
+        socket.sendText(Wire.hello(name, awareness))
+        relay.settle()
+        return heard
+            .firstNotNullOfOrNull { text -> ServerMessage.parse(text)?.params?.let { Seating.of(it) } }
+            ?: fail("the relay did not seat $name")
+    }
+
+    fun send(
+        relay: FakeRelay,
+        frame: ByteArray,
+    ) {
+        socket.sendBinary(frame)
+        relay.settle()
+    }
+}
 
 class SelvageSessionTest {
     private val relay = FakeRelay()
@@ -56,6 +219,7 @@ class SelvageSessionTest {
         recorded: Recorded,
         errors: ErrorSink = StderrErrorSink,
         listener: SessionListener? = SessionListener { recorded.events.add(it) },
+        sealFault: ((ByteArray) -> Boolean)? = null,
     ) = SessionOptions(
         name,
         transport = relay,
@@ -63,7 +227,12 @@ class SelvageSessionTest {
         meta = { _, _ -> Meta(null, emptyList(), emptyList(), null, 2_000) },
         listener = listener,
         errors = errors,
+        sealFault = sealFault,
     )
+
+    /** A plaintext that opens a `SyncStep1` message (`§7`: `message_type` 0, `sync_type` 0). */
+    private fun isStep1(plaintext: ByteArray): Boolean =
+        plaintext.size >= 2 && plaintext[0] == 0.toByte() && plaintext[1] == 0.toByte()
 
     private fun host(
         recorded: Recorded = Recorded(),
@@ -85,6 +254,46 @@ class SelvageSessionTest {
         relay.settle()
         advance(300)
         return guest
+    }
+
+    /**
+     * A viewer alone with two bare relay connections, its own key uncommitted and a foreign viewer
+     * key labelled at its seat. The signed states are sealed with a host key this test mints and
+     * names in the invite, which is what lets them replace the key at a seated role while the
+     * seat-to-role map stays still.
+     */
+    private fun keyReplacement(seen: Recorded): KeptRoom {
+        val base = "ws://relay.test"
+        val host = RawPeer(relay, Urls.sessionUrl(base))
+        val made = host.hello(relay, "Ada", 1L)
+        val token = made.token ?: fail("the relay created no token")
+        val writer = RawPeer(relay, Urls.sessionUrl(base, made.roomId, token))
+        val writerSeat = writer.hello(relay, "Wen", 2L).self.peerId
+        val hostKey = SessionKey.mint()
+        val roomKey = FrameCrypto.randomBytes(32)
+        val guest =
+            SelvageSession
+                .join(
+                    Invite.link(Urls.sessionUrl(base, made.roomId, token), roomKey, hostKey.public),
+                    options("Lena", seen),
+                    Role.VIEWER,
+                ).also { sessions.add(it) }
+        relay.settle()
+        val seat = guest.seat ?: fail("the viewer was not seated")
+        return KeptRoom(
+            guest,
+            host,
+            writer,
+            made.roomId,
+            roomKey,
+            Frames.frameKey(made.roomId, roomKey),
+            hostKey,
+            SessionKey.mint(),
+            SessionKey.mint(),
+            made.self.peerId,
+            writerSeat,
+            seat,
+        )
     }
 
     private fun advance(ms: Long) = scheduler.advance(ms) { relay.settle() }
@@ -693,5 +902,249 @@ class SelvageSessionTest {
             "one bounded line, not a stack trace per frame",
         )
         assertNull(session.ending, "the default sink kept the session")
+    }
+
+    @Test
+    fun `a thrown request seal keeps its obligation, and a restored seal serves it`() {
+        val host = host()
+        val seen = Recorded()
+        val reported = CopyOnWriteArrayList<Throwable>()
+        // A guest whose own `SyncStep1` cannot seal: every attempt throws, as a JCA fault does.
+        var failing = true
+        val guest =
+            SelvageSession
+                .join(
+                    host.invite!!,
+                    options(
+                        "Bob",
+                        seen,
+                        errors = { _, error -> reported.add(error) },
+                        sealFault = { plaintext ->
+                            if (failing &&
+                                isStep1(plaintext)
+                            ) {
+                                throw GeneralSecurityException("the seal fault")
+                            } else {
+                                false
+                            }
+                        },
+                    ),
+                ).also { sessions.add(it) }
+        relay.settle()
+        advance(300)
+        assertEquals(Role.GUEST, guest.ownRole())
+        val peer = guest.peerForTest() ?: fail("no peer behind the session")
+        assertTrue(peer.step1Attempts >= 1, "the thrown initial request was attempted")
+        assertTrue(
+            reported.any { it is GeneralSecurityException },
+            "the fault reached the sink and did not end the session: $reported",
+        )
+        assertNull(guest.ending, "a seal fault is not a terminal ending")
+
+        // Restoring the seal needs no further state or edit: the retained obligation is served.
+        failing = false
+        val before = peer.step1Attempts
+        advance(300)
+        assertTrue(peer.step1Attempts > before, "the retained initial request is served")
+        assertTrue(peer.handshake >= 1, "the request was sealed and queued")
+    }
+
+    @Test
+    fun `a persistently failed request draws exactly one automatic attempt a window`() {
+        val host = host()
+        val seen = Recorded()
+        // A guest whose own `SyncStep1` cannot seal: every automatic attempt fails and queues nothing.
+        var failing = true
+        val guest =
+            SelvageSession
+                .join(
+                    host.invite!!,
+                    options("Bob", seen, sealFault = { plaintext -> failing && isStep1(plaintext) }),
+                ).also { sessions.add(it) }
+        relay.settle()
+        advance(300)
+        assertEquals(Role.GUEST, guest.ownRole())
+        val peer = guest.peerForTest() ?: fail("no peer behind the session")
+        assertTrue(peer.step1Attempts >= 1, "the failed initial request was attempted")
+        assertNull(guest.ending, "a publication failure is not a terminal ending")
+
+        // Five renewal windows: an overdue deadline would wake the timer about every millisecond.
+        // The first window after a failure *completes* is the next attempt, and exactly one.
+        var attempts = peer.step1Attempts
+        repeat(5) {
+            advance(300)
+            assertEquals(attempts + 1, peer.step1Attempts, "one automatic attempt per renewal window")
+            attempts = peer.step1Attempts
+        }
+
+        // Restoring sealing serves every owed cause with one queued request, and clears the pacing.
+        failing = false
+        advance(300)
+        assertEquals(attempts + 1, peer.step1Attempts, "a restored seal queues one request")
+        advance(3 * 300)
+        val served = peer.step1Attempts
+        advance(3 * 300)
+        assertEquals(served, peer.step1Attempts, "nothing re-asks once the work is served")
+    }
+
+    @Test
+    fun `a failed request is paced from its completion, not from the clock it started on`() {
+        val host = host()
+        val seen = Recorded()
+        // A Step1 seal that spends a whole renewal window of the session clock and then fails, as
+        // a synchronous encoding, randomness or JCA operation that took real time does.
+        var failing = true
+        val entries = ArrayList<Long>()
+        val guest =
+            SelvageSession
+                .join(
+                    host.invite!!,
+                    options(
+                        "Bob",
+                        seen,
+                        sealFault = { plaintext ->
+                            if (failing && isStep1(plaintext)) {
+                                entries.add(scheduler.nowMs() - 1_000)
+                                scheduler.elapse(300)
+                                true
+                            } else {
+                                false
+                            }
+                        },
+                    ),
+                ).also { sessions.add(it) }
+        relay.settle()
+        val peer = guest.peerForTest() ?: fail("no peer behind the session")
+        val completion = peer.step1FailureAt ?: fail("no failed attempt was stamped")
+        assertEquals(entries.last() + 300, completion, "the failure clock is the completion, not the start")
+
+        // The next automatic attempt is a window after that completion, not at the grid boundary
+        // the attempt started on; the pumps in between re-arm without trying again.
+        val attempts = peer.step1Attempts
+        advance(300 - 1)
+        assertEquals(attempts, peer.step1Attempts, "no automatic attempt before the window from completion")
+        advance(1)
+        assertEquals(attempts + 1, peer.step1Attempts, "one automatic attempt after the window from completion")
+        // That attempt failed inside the pump, and it stamps its own completion too.
+        assertEquals(
+            entries.last() + 300,
+            peer.step1FailureAt,
+            "the pump stamps the completion, not the tick it started from",
+        )
+        // The time that pump consumed is the furthest the clock reached, and advance keeps it
+        // rather than rewinding to its own target: the relative clock stays monotone.
+        assertEquals(
+            entries.last() + 300,
+            scheduler.nowMs() - 1_000,
+            "the elapsed time a due callback consumed is kept, not rewound",
+        )
+
+        // A third attempt re-arms one window after the second completion, with no early wakeup in
+        // between, and stamps its own completion from the furthest clock as well.
+        val afterSecond = peer.step1Attempts
+        advance(300 - 1)
+        assertEquals(afterSecond, peer.step1Attempts, "no automatic attempt a millisecond before the window")
+        advance(1)
+        assertEquals(afterSecond + 1, peer.step1Attempts, "the request re-arms one window after its completion")
+        assertEquals(entries.last() + 300, peer.step1FailureAt, "the third attempt stamps its own completion")
+        assertEquals(
+            entries.last() + 300,
+            scheduler.nowMs() - 1_000,
+            "the clock kept the furthest time through the third completion too",
+        )
+    }
+
+    @Test
+    fun `a signed key replacement at a seated role moves the viewer with no seat-map change`() {
+        val seen = Recorded()
+        val room = keyReplacement(seen)
+        room.host.send(relay, room.foreign(1, 1))
+        room.writer.send(relay, room.roomText("room"))
+        assertEquals("room", room.guest.text("README.md"))
+        assertFalse(room.guest.insert("README.md", 0, "ghost"))
+        assertEquals("ghostroom", room.guest.text("README.md"))
+
+        val rolesBefore = room.guest.rolesBySeat()
+        val factsBefore = room.guest.facts()
+        val identityBefore = room.guest.docIdentity()
+        val peersBefore = seen.all<SessionEvent.Peers>().size
+        val eventsBefore = seen.events.size
+
+        // The same seat and the same VIEWER role, with this connection's own key replacing a
+        // foreign one: the seat-to-role map cannot say this, and neither can the visible text.
+        room.host.send(relay, room.rekeyed(2, 2))
+
+        assertEquals(rolesBefore, room.guest.rolesBySeat(), "the seat-to-role map did not move")
+        assertEquals(factsBefore, room.guest.facts(), "the people, listing and open set did not move")
+        assertEquals(Role.VIEWER, room.guest.ownRole())
+        assertTrue(identityBefore !== room.guest.docIdentity(), "the viewer resolution adopted a different replica")
+        assertTrue(
+            seen.all<SessionEvent.Peers>().size > peersBefore,
+            "the adapter heard this key's role and its basis move: ${seen.events}",
+        )
+        val fresh = seen.events.drop(eventsBefore)
+        assertTrue(fresh.isNotEmpty() && fresh.all { it is SessionEvent.Peers }, "only the local move is said: $fresh")
+        assertEquals("room", room.guest.text("README.md"), "the speculative edit rolled back to the adopted text")
+    }
+
+    @Test
+    fun `an equal-text key replacement still tells the adapter its editor basis is gone`() {
+        val seen = Recorded()
+        val room = keyReplacement(seen)
+        room.host.send(relay, room.foreign(1, 1))
+        room.writer.send(relay, room.roomText("room"))
+        assertEquals("room", room.guest.text("README.md"))
+        // A speculative insert taken straight back leaves the visible text exactly the room's.
+        assertFalse(room.guest.insert("README.md", 0, "ghost"))
+        assertFalse(room.guest.delete("README.md", 0, 5))
+        assertEquals("room", room.guest.text("README.md"))
+
+        val factsBefore = room.guest.facts()
+        val identityBefore = room.guest.docIdentity()
+        val peersBefore = seen.all<SessionEvent.Peers>().size
+        val eventsBefore = seen.events.size
+
+        room.host.send(relay, room.rekeyed(2, 2))
+
+        assertEquals(factsBefore, room.guest.facts(), "the people, listing and open set did not move")
+        assertEquals(Role.VIEWER, room.guest.ownRole())
+        assertTrue(identityBefore !== room.guest.docIdentity(), "the adopted replica is a different document")
+        assertTrue(
+            seen.all<SessionEvent.Peers>().size > peersBefore,
+            "equal visible text is still a new owner: ${seen.events}",
+        )
+        val fresh = seen.events.drop(eventsBefore)
+        assertTrue(fresh.isNotEmpty() && fresh.all { it is SessionEvent.Peers }, "only the local move is said: $fresh")
+        assertEquals("room", room.guest.text("README.md"))
+    }
+
+    @Test
+    fun `a key that becomes the seated viewer is heard although the map and the text do not move`() {
+        val seen = Recorded()
+        val room = keyReplacement(seen)
+        room.host.send(relay, room.foreign(1, 1))
+        room.writer.send(relay, room.roomText("room"))
+        assertEquals("room", room.guest.text("README.md"))
+
+        val rolesBefore = room.guest.rolesBySeat()
+        val factsBefore = room.guest.facts()
+        val identityBefore = room.guest.docIdentity()
+        val peersBefore = seen.all<SessionEvent.Peers>().size
+        val eventsBefore = seen.events.size
+
+        // No local edit was made, so no replica is adopted; this key's own role is the only move.
+        room.host.send(relay, room.rekeyed(2, 2))
+
+        assertEquals(rolesBefore, room.guest.rolesBySeat(), "the seat-to-role map did not move")
+        assertEquals(factsBefore, room.guest.facts(), "the people, listing and open set did not move")
+        assertEquals(Role.VIEWER, room.guest.ownRole())
+        assertSame(identityBefore, room.guest.docIdentity(), "nothing was discarded, so the replica is the same")
+        assertTrue(
+            seen.all<SessionEvent.Peers>().size > peersBefore,
+            "the local key's own role is heard with the map still: ${seen.events}",
+        )
+        val fresh = seen.events.drop(eventsBefore)
+        assertTrue(fresh.isNotEmpty() && fresh.all { it is SessionEvent.Peers }, "only the local move is said: $fresh")
+        assertEquals("room", room.guest.text("README.md"))
     }
 }
