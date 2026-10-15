@@ -155,9 +155,10 @@ object Invites {
         }
         val wire = wireInviteFor(invite)
         if (!isSessionBase(wire)) return INVITE_LINK_HINT
-        val parsed = parseSessionUrl(wire)
-        if (parsed == null || parsed.room.isNullOrEmpty() || parsed.token.isNullOrEmpty()) return INVITE_LINK_HINT
-        val dialled = URI(Urls.sessionUrl(parsed.base, parsed.room, parsed.token))
+        val parsed = (read as Invite.Read.Ok).invite
+        val base = Urls.baseOf(wire) ?: return INVITE_LINK_HINT
+        if (parsed.room.isEmpty() || parsed.token.isEmpty()) return INVITE_LINK_HINT
+        val dialled = URI(Urls.sessionUrl(base, parsed.room, parsed.token))
         val pasted =
             try {
                 URI(wire)
