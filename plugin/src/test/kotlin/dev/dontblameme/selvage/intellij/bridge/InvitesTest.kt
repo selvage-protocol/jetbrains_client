@@ -86,6 +86,60 @@ class InvitesTest : TestCase() {
         )
     }
 
+    fun testTheJoinBoxKeepsItsStricterWireAcceptance() {
+        val addresses =
+            listOf(
+                "ws://example.org/session?room=&token=t",
+                "ws://example.org/session?room=r&token=",
+                "ws://example.org/session?room=r&token=t&extra=ignored",
+                "ws://example.org/session?token=t&room=r",
+                "ws://example.org/session?room=%72&token=t",
+                "ws://example.org/session?room=r+1&token=t",
+                "ws://example.org/session?room=r%2b1&token=t",
+                "ws://example.org/prefix//session?room=r&token=t",
+                "ws://user@example.org/session?room=r&token=t",
+                "ftp://example.org/session?room=r&token=t",
+                "ws://example.org/session?room=r 1&token=t",
+            )
+        for (address in addresses) {
+            val link = "$address#k=$k&h=$h"
+            assertTrue(address, Invite.parse(link) is Invite.Read.Ok)
+            assertEquals(address, Invites.INVITE_LINK_HINT, Invites.inviteLinkRefusal(link))
+        }
+    }
+
+    fun testTheJoinBoxKeepsPageRewritingAndCanonicalWireAcceptance() {
+        val addresses =
+            listOf(
+                "https://example.org/prefix/?token=t&room=%72&extra=ignored",
+                "http://example.org:8080/prefix/?room=r+1&token=t",
+                "wss://example.org/prefix%2fpart/session?room=r%2B1&token=t",
+                "ws://example.org:8080/session?room=r&token=t",
+            )
+        for (address in addresses) {
+            assertNull(address, Invites.inviteLinkRefusal("$address#k=$k&h=$h"))
+        }
+    }
+
+    fun testPageAndWireLinksKeepTheRawPrefixAndFragment() {
+        val base = "wss://example.org:8443/prefix%2fpart"
+        val fragment = "#k=$k&h=$h&note=%2f+"
+        val page = "https://example.org:8443/prefix%2fpart/?room=r%2B1&token=t%2F2$fragment"
+        val wire = "$base/session?room=r%2B1&token=t%2F2"
+        assertEquals(wire, Invites.wireInviteFor(page))
+        assertEquals(fragment, Invites.fragmentOf(page))
+        assertEquals(page, Invites.pageInviteFor("$wire$fragment"))
+        assertNull(Invites.inviteLinkRefusal(page))
+        assertNull(Invites.inviteLinkRefusal("$wire$fragment"))
+        assertEquals(base, Invites.sessionAddress(wire))
+        assertEquals(base, Invites.sessionAddress("$wire$fragment"))
+        assertEquals("the address in the invite", Invites.sessionAddress("not an invite#token=t"))
+        assertEquals(
+            "No server answered — ${Invites.JOIN_CHECK}",
+            Invites.connectRefusal(SessionException("connect", "$wire$fragment"), Invites.JOIN_CHECK),
+        )
+    }
+
     /**
      * The join's own path: `wireInviteFor`, then the fragment as it arrived, handed to the engine
      * (`SelvageService.join`). A repeated page link is not rewritten — the rewrite would have to
