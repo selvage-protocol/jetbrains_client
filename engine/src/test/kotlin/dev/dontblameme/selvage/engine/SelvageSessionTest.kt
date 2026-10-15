@@ -68,16 +68,17 @@ private class KeptRoom(
     val seat: String,
 )
 
-/** A state committing [hostKey], [writerKey] and a viewer spelling at [KeptRoom.seat]. */
+/** A state committing [hostKey], [writerKey] and [viewerSpelling] at [seat] at [role]. */
 private fun KeptRoom.state(
     issued: Long,
     counter: Long,
     viewerSpelling: String,
+    role: Role = Role.VIEWER,
 ): ByteArray {
     val peers = LinkedHashMap<String, PeerEntry>()
     peers[hostKey.spelling] = PeerEntry(hostSeat, Role.HOST)
     peers[writerKey.spelling] = PeerEntry(writerSeat, Role.GUEST)
-    peers[viewerSpelling] = PeerEntry(seat, Role.VIEWER)
+    peers[viewerSpelling] = PeerEntry(seat, role)
     return Frames.seal(
         roomId,
         frameKey,
@@ -98,7 +99,8 @@ private fun KeptRoom.foreign(
 private fun KeptRoom.rekeyed(
     issued: Long,
     counter: Long,
-): ByteArray = state(issued, counter, announcedKey(host.frames, roomId, frameKey))
+    role: Role = Role.VIEWER,
+): ByteArray = state(issued, counter, announcedKey(host.frames, roomId, frameKey), role)
 
 /** A legitimate content frame from the committed writer, putting [text] in README.md. */
 private fun KeptRoom.roomText(text: String): ByteArray =
@@ -129,6 +131,18 @@ private fun announcedKey(
         return announcement.key
     }
     fail("no announcement among ${frames.size} frames")
+}
+
+/** The README.md text the content frames the raw host in [KeptRoom.host] received produce. */
+private fun KeptRoom.hostText(): String {
+    val doc = Doc()
+    for (frame in host.frames) {
+        val envelope = Envelope.parse(frame) ?: continue
+        if (envelope.kind != 0L) continue
+        val plaintext = Frames.opens(roomId, frameKey, envelope) ?: continue
+        Sync.read(plaintext) { message -> if (message is SyncMessage.Update) Updates.applyUpdate(doc, message.update) }
+    }
+    return if ("README.md" in doc.rootNames) doc.getText("README.md").toString() else ""
 }
 
 /** The room facts a signed key replacement must leave still: neither the seat map nor the text says them. */
@@ -262,7 +276,11 @@ class SelvageSessionTest {
      * names in the invite, which is what lets them replace the key at a seated role while the
      * seat-to-role map stays still.
      */
-    private fun keyReplacement(seen: Recorded): KeptRoom {
+    private fun keyReplacement(
+        seen: Recorded,
+        errors: ErrorSink = StderrErrorSink,
+        sealFault: ((ByteArray) -> Boolean)? = null,
+    ): KeptRoom {
         val base = "ws://relay.test"
         val host = RawPeer(relay, Urls.sessionUrl(base))
         val made = host.hello(relay, "Ada", 1L)
@@ -275,7 +293,7 @@ class SelvageSessionTest {
             SelvageSession
                 .join(
                     Invite.link(Urls.sessionUrl(base, made.roomId, token), roomKey, hostKey.public),
-                    options("Lena", seen),
+                    options("Lena", seen, errors = errors, sealFault = sealFault),
                     Role.VIEWER,
                 ).also { sessions.add(it) }
         relay.settle()
@@ -1146,5 +1164,49 @@ class SelvageSessionTest {
         val fresh = seen.events.drop(eventsBefore)
         assertTrue(fresh.isNotEmpty() && fresh.all { it is SessionEvent.Peers }, "only the local move is said: $fresh")
         assertEquals("room", room.guest.text("README.md"))
+    }
+
+    @Test
+    fun `a throwing committing state leaves the held edit and the local role move to the next pump`() {
+        val seen = Recorded()
+        val reported = CopyOnWriteArrayList<Throwable>()
+        var failing = true
+        // A guest whose own `SyncStep1` cannot seal: every attempt throws, as a JCA fault does.
+        val room =
+            keyReplacement(
+                seen,
+                errors = { _, error -> reported.add(error) },
+                sealFault = { plaintext ->
+                    if (failing && isStep1(plaintext)) throw GeneralSecurityException("the seal fault") else false
+                },
+            )
+        // §13.1's step 4: an uncommitted key's edit is held, and nothing is published for it.
+        assertFalse(room.guest.insert("README.md", 0, "hello"))
+        relay.settle()
+        assertEquals("", room.hostText(), "nothing reaches the room before the committing state")
+
+        // The local role move this state makes, which the adapter hears as a Peers event.
+        val peersBefore = seen.all<SessionEvent.Peers>().size
+
+        // The state that commits this key as a guest is the one whose step 6 request cannot seal.
+        room.host.send(relay, room.rekeyed(1, 1, Role.GUEST))
+        assertEquals(Role.GUEST, room.guest.ownRole())
+        assertTrue(reported.any { it is GeneralSecurityException }, "the seal fault reached the sink: $reported")
+        // The failed delivery skipped afterChange, so the local role move is not said with it.
+        assertEquals(
+            peersBefore,
+            seen.all<SessionEvent.Peers>().size,
+            "the failed delivery skipped the local Peers event",
+        )
+        // The failed delivery skipped the socket pump, so the queued frame waits for the next pump
+        // rather than being sent by the delivery that threw; nothing is lost by that wait.
+        assertEquals("", room.hostText(), "the queued frame waits for the next pump, not the failed delivery")
+
+        // Restoring the seal is not what serves the held edit: the pump that follows carries out what
+        // the committing state already queued, with no further state and no new edit.
+        failing = false
+        advance(300)
+        assertEquals("hello", room.hostText(), "the held edit reached the room")
+        assertTrue(seen.all<SessionEvent.Peers>().size > peersBefore, "the next pump says the local role move")
     }
 }

@@ -17,10 +17,13 @@ import dev.dontblameme.selvage.sealed.PeerEntry
 import dev.dontblameme.selvage.sealed.Role
 import dev.dontblameme.selvage.sealed.RoomState
 import dev.dontblameme.selvage.sealed.SessionKey
+import java.security.GeneralSecurityException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** The awareness id of a session a case drives on its own, and the id a re-seat rotates it to. */
@@ -147,6 +150,10 @@ private fun malformedStep1(): ByteArray = Sync.encode(SyncMessage.Step1(byteArra
 private fun isStep1(plaintext: ByteArray): Boolean =
     plaintext.size >= 2 && plaintext[0] == 0.toByte() && plaintext[1] == 0.toByte()
 
+/** Whether [plaintext] opens a content `Update` (`Sync.MESSAGE_SYNC`, `Sync.SYNC_UPDATE`). */
+private fun isContentUpdate(plaintext: ByteArray): Boolean =
+    plaintext.size >= 2 && plaintext[0] == 0.toByte() && plaintext[1] == 2.toByte()
+
 /** A `kind = 1` state the host sealed, committing one guest key per [peers] entry. */
 private fun Room.stateFrame(
     issued: Long,
@@ -261,6 +268,17 @@ private fun Room.publishedText(frames: List<ByteArray>): String {
     val doc = Doc()
     for ((kind, payload) in syncSteps(frames)) if (kind != "step1") Updates.applyUpdate(doc, payload)
     return if ("README.md" in doc.rootNames) doc.getText("README.md").toString() else ""
+}
+
+/** Every `kind = 3` holds frame in [frames] as its path list, in the order it was sent. */
+private fun Room.holds(frames: List<ByteArray>): List<String> {
+    val frameKey = Frames.frameKey(roomId, roomKey)
+    return frames.flatMap { frame ->
+        val envelope = Envelope.parse(frame) ?: return@flatMap emptyList()
+        if (envelope.kind != 3L) return@flatMap emptyList()
+        val plaintext = Frames.opens(roomId, frameKey, envelope) ?: return@flatMap emptyList()
+        (Payload.read(envelope.kind, plaintext) as? Payload.Holds)?.holds ?: emptyList()
+    }
 }
 
 /** What an UNKNOWN-role replica shows before and after a role resolution, and what it publishes. */
@@ -675,6 +693,87 @@ class PeerSessionTest {
             room.awarenessEntries(guest.takeOutbound()).isEmpty(),
             "the flush published the held state twice",
         )
+    }
+
+    @Test
+    fun `a thrown committing request still publishes the edit, awareness and hold the state owed`() {
+        val room = Room()
+        val guest =
+            room.alone("p-guest", AWARENESS) { plaintext ->
+                if (isStep1(plaintext)) throw GeneralSecurityException("the seal fault") else false
+            }
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+
+        // §13.1's step 4: while this key is uncommitted its edit, awareness and hold are held, and
+        // nothing is publishable for any of them.
+        guest.open("README.md")
+        assertFalse(guest.insert("README.md", 0, "hello"))
+        guest.setCursor("README.md", Selection(0, 2))
+        assertTrue(guest.takeOutbound().isEmpty(), "nothing is publishable before the committing state")
+
+        // The state that commits this key is the one whose §13.1 step 6 request cannot seal. The
+        // fault reaches the caller; the obligations the same commitment owes are still served.
+        assertFailsWith<GeneralSecurityException> {
+            guest.deliver(1, room.stateFrame(1, 1, guest.sessionKey to "p-guest", other to "p-other"))
+        }
+
+        val out = guest.takeOutbound()
+        assertEquals("hello", room.publishedText(out), "the held edit goes out with the committing state")
+        assertEquals(listOf(AWARENESS to 2L), room.awarenessEntries(out), "the held awareness does too")
+        assertEquals(listOf("README.md"), room.holds(out), "and so does the hold taken before the state")
+    }
+
+    @Test
+    fun `a transient content seal fault on the initial flush keeps the owed edit for a later state`() {
+        val room = Room()
+        val initial = GeneralSecurityException("the initial step-6 seal fault")
+        val content = GeneralSecurityException("the held-content seal fault")
+        var step1Faults = 0
+        var contentFaults = 0
+        val guest =
+            room.alone("p-guest", AWARENESS) { plaintext ->
+                if (isStep1(plaintext) && step1Faults++ == 0) throw initial
+                if (isContentUpdate(plaintext) && contentFaults++ == 0) throw content
+                false
+            }
+        val other = SessionKey.mint()
+        guest.tick(0)
+        guest.takeOutbound()
+
+        // §13.1's step 4: while this key is uncommitted its edit and awareness are held, and the
+        // local edit is in the replica even though nothing may publish it yet.
+        guest.open("README.md")
+        assertFalse(guest.insert("README.md", 0, "hello"))
+        guest.setCursor("README.md", Selection(0, 2))
+        assertTrue(guest.takeOutbound().isEmpty(), "nothing is publishable before the committing state")
+        assertEquals("hello", guest.text("README.md"), "the local edit stands in the replica")
+
+        // The committing state's own step 6 request throws first; the flush it newly reaches then
+        // hits a second, transient content seal fault. The first fault reaches the caller, the
+        // second is suppressed onto it, and neither failed seal queued a frame.
+        val publishedBefore = guest.published
+        val handshakeBefore = guest.handshake
+        val thrown =
+            assertFailsWith<GeneralSecurityException> {
+                guest.deliver(1, room.stateFrame(1, 1, guest.sessionKey to "p-guest", other to "p-other"))
+            }
+        assertSame(initial, thrown, "the initial request's fault is the one reported")
+        assertEquals(listOf(content), thrown.suppressed.toList(), "the content fault is suppressed onto it")
+        assertTrue(guest.takeOutbound().isEmpty(), "neither failed seal queued a frame")
+        assertEquals(publishedBefore, guest.published, "no failed seal counted as a publication")
+        assertEquals(handshakeBefore, guest.handshake, "no failed seal counted as a request")
+        assertEquals("hello", guest.text("README.md"), "the local edit still stands in the replica")
+
+        // Sealing recovers. A newer state that commits this key is the existing flush trigger, and
+        // it must still serve the edit the failed flush owed — no new local edit, no tick.
+        assertEquals(
+            Outcome.Applied(1),
+            guest.deliver(2, room.stateFrame(2, 2, guest.sessionKey to "p-guest", other to "p-other")),
+        )
+        val out = guest.takeOutbound()
+        assertEquals("hello", room.publishedText(out), "the owed edit reaches the room on the newer state")
     }
 
     @Test
