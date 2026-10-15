@@ -431,10 +431,29 @@ class PeerSession(
             } else if (role == Role.HOST || role == Role.GUEST) {
                 acceptSpeculation()
             }
-            if (handshakenAt == null) initialHandshake(clock)
-            flushHeldBackEdits()
-            flushHeldBackAwareness()
-            announceHolds(clock)
+            // §13.1's steps 6 and 4: the request and the held obligations a state that commits this
+            // key owes. A step 6 seal fault is reported to the caller, but it must not take the held
+            // edit, awareness or hold with it: no later state may come to serve them.
+            var failure: Exception? = null
+            if (handshakenAt == null) {
+                try {
+                    initialHandshake(clock)
+                } catch (e: Exception) {
+                    failure = e
+                }
+            }
+            try {
+                flushHeldBackEdits()
+                flushHeldBackAwareness()
+                announceHolds(clock)
+            } catch (e: Exception) {
+                if (failure == null) {
+                    failure = e
+                } else if (failure !== e) {
+                    failure.addSuppressed(e)
+                }
+            }
+            if (failure != null) throw failure
         } else {
             announce(clock)
         }
@@ -996,17 +1015,22 @@ class PeerSession(
         if (publish(Publication.CONTENT, frame)) awarenessRenewedAt = clockOfLastMove
     }
 
+    /**
+     * Serves the edits §13.1's step 4 held back, retaining them until the merged frame actually
+     * queues.
+     *
+     * The owed entries leave [unsent] only on success: a throwing merge, encode or seal, a refusal
+     * and an unavailable publication all leave them for the next state that commits this key. The
+     * frame is queued whole or not at all, so nothing is lost and nothing is published twice.
+     */
     private fun flushHeldBackEdits() {
         if ((ownRole() != Role.HOST && ownRole() != Role.GUEST) || unsent.isEmpty()) return
         val held = ArrayList(unsent)
-        unsent.clear()
         val merged = Updates.mergeUpdates(held.map { it.update })
         acceptSpeculation()
-        if (!mayPublish()) {
-            unsent.addAll(held)
-            return
-        }
-        if (!publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(merged)))) unsent.addAll(0, held)
+        if (!mayPublish()) return
+        if (!publish(Publication.CONTENT, Sync.encode(SyncMessage.Update(merged)))) return
+        unsent.removeAll(held)
     }
 
     /**
@@ -1217,10 +1241,12 @@ class PeerSession(
     /**
      * One frame sealed under the frame key and signed by this connection's session key.
      *
-     * The attachment, session-life, commitment/content and budget gates all apply here, and the
-     * counter and room-frame budget are spent before the frame is queued, so a refused publication
-     * returns false without consuming anything and never reuses a counter. There is no
-     * asynchronous sealing here, so a canceled seal cannot replay a reserved frame either.
+     * The attachment, session-life, commitment/content and budget gates all apply here; each
+     * returns false before the counter and room-frame budget are reserved. Once they are reserved,
+     * a failed seal (the test-only [sealFault] predicate answering true, or [Frames.seal]
+     * throwing) keeps the reservation: the counter is spent and the room frame counted, neither
+     * is refunded and the counter is never reused. Sealing is synchronous, so a frame is queued
+     * whole in this call or not at all.
      */
     private fun publish(
         what: Publication,
