@@ -2,6 +2,7 @@ package dev.dontblameme.selvage.intellij.bridge
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import dev.dontblameme.selvage.engine.ErrorSink
 import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
@@ -178,6 +179,17 @@ class Mirror private constructor(
     }
 
     companion object {
+        /**
+         * Where a marker that cannot be read is recorded: a copy whose marker will not parse or will
+         * not open is not positively a copy and stays, and up to now nothing said so. `pruneRoom` runs
+         * on a pooled thread with no project, so the sink is the platform's logger; a test attaches a
+         * recorder here.
+         */
+        internal var markerSink: ErrorSink =
+            ErrorSink { what, error ->
+                Logger.getInstance(Mirror::class.java).warn(what, error)
+            }
+
         const val MARKER = ".selvage-mirror.json"
 
         /** The copy's folder under the window's directory, and so the name of the guest's project. */
@@ -297,8 +309,10 @@ class Mirror private constructor(
                 if (json.string("created") == null) return null
                 Marker(json.string("room") ?: return null, json.string("window") ?: return null, pid)
             } catch (e: IOException) {
+                markerSink.onError("the mirror marker at $file could not be read, so its copy stays", e)
                 null
             } catch (e: RuntimeException) {
+                markerSink.onError("the mirror marker at $file could not be read, so its copy stays", e)
                 null
             }
         }
