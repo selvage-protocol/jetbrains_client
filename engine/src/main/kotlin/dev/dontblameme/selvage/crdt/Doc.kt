@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.crdt
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 
 /** What a document emits after a transaction that changed it: the change as a v1 update. */
@@ -84,12 +85,13 @@ class Doc(
     }
 
     private fun cleanupTransactions() {
-        var failure: Throwable? = null
+        var failure: Exception? = null
         var i = 0
         while (i < cleanups.size) {
             try {
                 cleanup(cleanups[i])
-            } catch (e: Throwable) {
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 if (failure == null) failure = e else failure.addSuppressed(e)
             }
             i++
@@ -110,7 +112,8 @@ class Doc(
                 for (observer in type.observers.toList()) {
                     try {
                         observer(event)
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
                         if (failure == null) failure = e else failure.addSuppressed(e)
                     }
                 }

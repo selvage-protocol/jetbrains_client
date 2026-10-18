@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.crdt
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -137,5 +138,46 @@ class YTextTest {
         two.getText(path).insert(2, "Y")
         sync(two, one)
         assertEquals("aXYc", one.text())
+    }
+
+    /** A transaction ends only after its last observer was allowed to see its event. */
+    @Test
+    fun an_observerS_failure_accumulates_its_peers_and_arises_at_the_transactions_end() {
+        val doc = Doc(1)
+        val text = doc.getText(path)
+        val seen = ArrayList<String>()
+        text.observe {
+            seen.add("first")
+            throw IllegalStateException("the first failed")
+        }
+        text.observe {
+            seen.add("second")
+            throw IllegalArgumentException("the second failed")
+        }
+        text.observe { seen.add("third") }
+        val thrown = assertFailsWith<IllegalStateException> { text.insert(0, "x") }
+        assertEquals("the first failed", thrown.message)
+        assertEquals(1, thrown.suppressed.size)
+        assertEquals("the second failed", thrown.suppressed[0].message)
+        assertEquals(listOf("first", "second", "third"), seen)
+    }
+
+    /**
+     * A cancellation is never an outcome: it leaves at once, the observers after it never see the
+     * event, and the transaction's own teardown still happens.
+     */
+    @Test
+    fun a_cancellation_in_an_observer_propagates_immediately() {
+        val doc = Doc(1)
+        val text = doc.getText(path)
+        val seen = ArrayList<String>()
+        text.observe { throw CancellationException("the transaction was torn down") }
+        text.observe { seen.add("later") }
+        val thrown = assertFailsWith<CancellationException> { text.insert(0, "x") }
+        assertEquals("the transaction was torn down", thrown.message)
+        assertTrue(seen.isEmpty(), "the observer after the cancellation ran")
+        assertEquals("x", text.toString())
+        text.insert(0, "y")
+        assertEquals("yx", text.toString())
     }
 }
