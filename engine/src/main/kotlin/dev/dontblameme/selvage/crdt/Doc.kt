@@ -1,5 +1,6 @@
 package dev.dontblameme.selvage.crdt
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 
 /** What a document emits after a transaction that changed it: the change as a v1 update. */
@@ -83,18 +84,29 @@ class Doc(
         }
     }
 
+    /**
+     * Runs every queued transaction's cleanup, then empties the queue — however the walk ends. A
+     * transaction left behind as the head would keep every later one from ever being `cleanups[0]`,
+     * so its observers and update listeners would never run. The queue is emptied only at the end
+     * because an observer may open a transaction of its own, which appends to the queue being walked.
+     */
     private fun cleanupTransactions() {
-        var failure: Throwable? = null
+        var failure: Exception? = null
         var i = 0
-        while (i < cleanups.size) {
-            try {
-                cleanup(cleanups[i])
-            } catch (e: Throwable) {
-                if (failure == null) failure = e else failure.addSuppressed(e)
+        try {
+            while (i < cleanups.size) {
+                try {
+                    cleanup(cleanups[i])
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (failure == null) failure = e else failure.addSuppressed(e)
+                }
+                i++
             }
-            i++
+        } finally {
+            cleanups.clear()
         }
-        cleanups.clear()
         failure?.let { throw it }
     }
 
@@ -110,7 +122,9 @@ class Doc(
                 for (observer in type.observers.toList()) {
                     try {
                         observer(event)
-                    } catch (e: Throwable) {
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
                         if (failure == null) failure = e else failure.addSuppressed(e)
                     }
                 }

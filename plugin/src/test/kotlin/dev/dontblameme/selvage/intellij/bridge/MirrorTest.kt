@@ -1,8 +1,12 @@
 package dev.dontblameme.selvage.intellij.bridge
 
+import dev.dontblameme.selvage.engine.ErrorSink
 import junit.framework.TestCase
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 
 /** A guest's mirror takes the room's names, never a path out of itself, and never project settings. */
 class MirrorTest : TestCase() {
@@ -219,5 +223,58 @@ class MirrorTest : TestCase() {
         assertNull(mirror.fileOf("../w2/x.txt"))
         assertNull("the marker in another case is still the marker", mirror.fileOf(".SELVAGE-MIRROR.JSON"))
         assertEquals(mirror.root.resolve("C:").resolve("x.txt"), mirror.fileOf("C:/x.txt"))
+    }
+
+    /**
+     * A copy whose marker will not parse is not positively a copy and stays, but the reason now
+     * reaches the sink. Characterizes the one report: before it, the failure left no trace.
+     */
+    fun testAMarkerThatCannotBeReadIsRecordedAndItsCopyStays() {
+        val storage = scratch.resolve("storage")
+        val dead = Mirror.mint(storage, "r", "dead", pid = Int.MAX_VALUE.toLong())
+        val marker = dead.home.resolve(Mirror.MARKER)
+        Files.writeString(marker, "{not json")
+        var recorded: Pair<String, Throwable>? = null
+        val sink = Mirror.markerSink
+        Mirror.markerSink = ErrorSink { what, error -> recorded = what to error }
+        try {
+            assertEquals(emptyList<String>(), Mirror.pruneRoom(storage, "r", "current"))
+            assertTrue(
+                "the copy with the unreadable marker stays",
+                Files.isDirectory(dead.home, LinkOption.NOFOLLOW_LINKS),
+            )
+            assertEquals("the mirror marker at $marker could not be read, so its copy stays", recorded?.first)
+            assertTrue(recorded?.second is dev.dontblameme.selvage.canonical.MalformedJson)
+        } finally {
+            Mirror.markerSink = sink
+        }
+    }
+
+    /**
+     * A marker whose attributes cannot be taken is not positively a file either, so the copy stays
+     * and the reason reaches the sink. The window directory keeps its read permission, so the room
+     * still lists it and its own check passes, and loses only its search permission, so nothing
+     * under it can be statted: the marker's own read is the one that fails.
+     */
+    fun testAMarkerWhoseAttributesCannotBeTakenIsRecordedAndItsCopyStays() {
+        val storage = scratch.resolve("storage-perms")
+        val dead = Mirror.mint(storage, "r", "dead", pid = Int.MAX_VALUE.toLong())
+        val marker = dead.home.resolve(Mirror.MARKER)
+        Files.setPosixFilePermissions(dead.home, PosixFilePermissions.fromString("r--------"))
+        var recorded: Pair<String, Throwable>? = null
+        val sink = Mirror.markerSink
+        Mirror.markerSink = ErrorSink { what, error -> recorded = what to error }
+        try {
+            assertEquals(emptyList<String>(), Mirror.pruneRoom(storage, "r", "current"))
+            assertTrue(
+                "the copy whose marker cannot be statted stays",
+                Files.isDirectory(dead.home, LinkOption.NOFOLLOW_LINKS),
+            )
+            assertEquals("the mirror marker at $marker could not be read, so its copy stays", recorded?.first)
+            assertTrue(recorded?.second is AccessDeniedException)
+        } finally {
+            Files.setPosixFilePermissions(dead.home, PosixFilePermissions.fromString("rwx------"))
+            Mirror.markerSink = sink
+        }
     }
 }
