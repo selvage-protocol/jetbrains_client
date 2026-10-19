@@ -72,7 +72,11 @@ class LiveSelvagedTest {
 
             guest.rename("Robert").get(5, TimeUnit.SECONDS)
             eventually("the rename reaches the host") { host.peers().map { it.displayName } == listOf("Robert") }
-            assertEquals("Robert", guest.displayName)
+            // The reply to `session.rename` is queued before the `peer.renamed` that carries the
+            // name back, so the mover's own name arrives after the future completes, not with it.
+            eventually("the guest's own name is the one it asked for", observed = { guest.displayName }) {
+                guest.displayName == "Robert"
+            }
 
             host.leave()
             eventually("the guest sees the host away") { guestEvents.any { it is SessionEvent.HostAway } }
