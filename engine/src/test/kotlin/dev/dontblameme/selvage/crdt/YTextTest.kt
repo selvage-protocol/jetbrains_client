@@ -171,13 +171,43 @@ class YTextTest {
         val doc = Doc(1)
         val text = doc.getText(path)
         val seen = ArrayList<String>()
-        text.observe { throw CancellationException("the transaction was torn down") }
+        val removeObserver = text.observe { throw CancellationException("the transaction was torn down") }
         text.observe { seen.add("later") }
         val thrown = assertFailsWith<CancellationException> { text.insert(0, "x") }
         assertEquals("the transaction was torn down", thrown.message)
         assertTrue(seen.isEmpty(), "the observer after the cancellation ran")
         assertEquals("x", text.toString())
+        // Canceling observers remain registered, so detach one before editing again: the next
+        // transaction's cleanup does run now, and a still-throwing observer would fail that edit.
+        removeObserver()
         text.insert(0, "y")
         assertEquals("yx", text.toString())
+    }
+
+    /**
+     * A cancellation leaves no head behind: the queue it empties lets the next transaction be
+     * cleaned up as any other, so its observers and its update both run.
+     */
+    @Test
+    fun an_edit_after_a_cancellation_still_runs_the_next_transactionS_cleanup() {
+        val doc = Doc(1)
+        val text = doc.getText(path)
+        var cancelled = false
+        text.observe {
+            if (!cancelled) {
+                cancelled = true
+                throw CancellationException("the transaction was torn down")
+            }
+        }
+        val seen = ArrayList<String>()
+        text.observe { seen.add("observed") }
+        val updates = ArrayList<ByteArray>()
+        doc.onUpdate { update, _, _ -> updates.add(update) }
+        assertFailsWith<CancellationException> { text.insert(0, "x") }
+        assertEquals(1, updates.size, "the canceled transaction's own teardown did not emit its update")
+        text.insert(0, "y")
+        assertEquals("yx", text.toString())
+        assertEquals(2, updates.size, "the edit after the cancellation did not emit its update")
+        assertEquals(1, seen.size, "the edit after the cancellation did not reach its observers")
     }
 }
