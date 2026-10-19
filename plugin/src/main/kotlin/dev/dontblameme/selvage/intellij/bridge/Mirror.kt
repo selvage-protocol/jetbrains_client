@@ -8,6 +8,7 @@ import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardOpenOption
@@ -259,7 +260,8 @@ class Mirror private constructor(
         /**
          * Removes the room's dead copies: each window directory under `<storage>/rooms/<room>/`, other
          * than [currentWindow], whose marker this client wrote for [room] and whose process is gone. A
-         * directory with no marker, one it cannot read, or a link is not positively a copy and stays.
+         * directory with no marker, a link, or one whose marker will not read is not positively a copy
+         * and stays; the last is reported through [markerSink], the other two are not failures.
          * Returns the windows removed.
          */
         fun pruneRoom(
@@ -293,10 +295,24 @@ class Mirror private constructor(
             val pid: Long,
         )
 
-        /** The marker at [root] when it is one this client (or VS Code) wrote, read without following a link. */
+        /**
+         * The marker at [root] when it is one this client (or VS Code) wrote, read without following a
+         * link. An absent marker and a link are answered with null and nothing said: neither is a
+         * failure, and both mean the same as a marker that will not read — the directory is not
+         * positively a copy, and stays. What a marker that *is* there raises is reported, because a
+         * copy kept for a reason nobody can see is a copy nobody can clean up.
+         */
         private fun readMarker(root: Path): Marker? {
             val file = root.resolve(MARKER)
-            if (!isPlainFile(file)) return null
+            val attrs =
+                try {
+                    Files.readAttributes(file, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                } catch (e: NoSuchFileException) {
+                    return null
+                } catch (e: IOException) {
+                    return unreadable(file, e)
+                }
+            if (!attrs.isRegularFile || attrs.isSymbolicLink) return null
             return try {
                 val text =
                     Files
@@ -309,12 +325,19 @@ class Mirror private constructor(
                 if (json.string("created") == null) return null
                 Marker(json.string("room") ?: return null, json.string("window") ?: return null, pid)
             } catch (e: IOException) {
-                markerSink.onError("the mirror marker at $file could not be read, so its copy stays", e)
-                null
+                unreadable(file, e)
             } catch (e: RuntimeException) {
-                markerSink.onError("the mirror marker at $file could not be read, so its copy stays", e)
-                null
+                unreadable(file, e)
             }
+        }
+
+        /** Says why the marker at [file] will not read, and answers null so the copy stays. */
+        private fun unreadable(
+            file: Path,
+            cause: Exception,
+        ): Marker? {
+            markerSink.onError("the mirror marker at $file could not be read, so its copy stays", cause)
+            return null
         }
 
         private const val MAX_MARKER_BYTES = 64 * 1024
