@@ -24,6 +24,14 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.4.1</p>
+    <ul>
+      <li>Valid edits around malformed Unicode are kept when the damaged text is restored.</li>
+      <li>Reconnecting no longer leaves files unable to sync or accept edits after the session resolves your role.</li>
+      <li>Pending edits are kept when encryption temporarily fails, so they can be sent on a later attempt.</li>
+      <li>Canceling a transaction no longer prevents later edits from notifying the editor and the other participants.</li>
+      <li>A guest copy kept because its cleanup marker cannot be read now records the reason in the IDE log.</li>
+    </ul>
     <p>0.4.0</p>
     <ul>
       <li>Hosting shares every folder of the project, instead of only the folder the window was opened on.</li>
