@@ -24,6 +24,10 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.4.2</p>
+    <ul>
+      <li>Removes the deprecated editor-opening API warning reported by IntelliJ IDEA 2026.3 EAP.</li>
+    </ul>
     <p>0.4.1</p>
     <ul>
       <li>Valid edits around malformed Unicode are kept when the damaged text is restored.</li>
