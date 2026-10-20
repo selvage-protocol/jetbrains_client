@@ -3,9 +3,16 @@ package dev.dontblameme.selvage.intellij.session
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorPolicy
+import com.intellij.openapi.fileEditor.FileEditorProvider
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.HeavyPlatformTestCase
 import com.intellij.testFramework.PlatformTestUtil
 import dev.dontblameme.selvage.engine.HostContent
@@ -178,6 +185,67 @@ class LiveSessionTest : HeavyPlatformTestCase() {
         eventually("the guest has the listing", timeoutMs = roundTripMs) { guest.listing() == listOf("README.md") }
         eventually("the host has attributed the guest", timeoutMs = roundTripMs) { session.participants().size == 1 }
         return session to guest
+    }
+
+    fun testOpeningARoomPathSelectsAndBindsItsTextEditorWithoutResettingTheCaret() {
+        val (session, _) = hostWithOneFile()
+        val otherPath = Files.writeString(scratch.resolve("other.txt"), "other\n")
+        val otherEditor = openInEditor(otherPath)
+        val manager = FileEditorManager.getInstance(project)
+        val editor = session.openRoomPath("README.md") ?: throw AssertionError("no text editor")
+        assertNotSame(otherEditor, editor)
+        assertSame(editor, manager.selectedTextEditor)
+        assertEquals("hello\n", editor.document.text)
+        assertTrue("the document is bound before returning", session.sync.isBound("README.md"))
+
+        editor.caretModel.moveToOffset(3)
+        assertSame(editor, session.openRoomPath("README.md"))
+        assertEquals(3, editor.caretModel.offset)
+
+        openInEditor(otherPath)
+        assertSame(editor, session.openRoomPath("README.md"))
+        assertSame(editor, manager.selectedTextEditor)
+        assertEquals(3, editor.caretModel.offset)
+    }
+
+    fun testOpeningARoomPathReturnsACustomOnlyTextEditor() {
+        val (session, _) = hostWithOneFile()
+        val file =
+            LocalFileSystem.getInstance().refreshAndFindFileByNioFile(
+                Path.of(project.basePath!!).resolve("README.md"),
+            )!!
+        var customEditor: Editor? = null
+        file.putUserData(
+            FileEditorProvider.KEY,
+            object : FileEditorProvider {
+                override fun accept(
+                    project: Project,
+                    file: VirtualFile,
+                ): Boolean = true
+
+                override fun createEditor(
+                    project: Project,
+                    file: VirtualFile,
+                ): FileEditor =
+                    TextEditorProvider.getInstance().createEditor(project, file).also {
+                        customEditor = (it as TextEditor).editor
+                    }
+
+                override fun getEditorTypeId(): String = "selvage-test-text"
+
+                override fun getPolicy(): FileEditorPolicy = FileEditorPolicy.HIDE_DEFAULT_EDITOR
+            },
+        )
+        try {
+            val editor = session.openRoomPath("README.md") ?: throw AssertionError("no text editor")
+            assertNotNull("the custom provider created an editor", customEditor)
+            assertSame(customEditor, editor)
+            assertSame(editor, FileEditorManager.getInstance(project).selectedTextEditor)
+            assertEquals("hello\n", editor.document.text)
+            assertTrue("the document is bound before returning", session.sync.isBound("README.md"))
+        } finally {
+            file.putUserData(FileEditorProvider.KEY, null)
+        }
     }
 
     /**

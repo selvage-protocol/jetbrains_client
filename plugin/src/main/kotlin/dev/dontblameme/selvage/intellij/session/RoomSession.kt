@@ -17,6 +17,8 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -792,7 +794,15 @@ class RoomSession(
         }
         val selected = manager.selectedTextEditor
         if (selected != null && FileDocumentManager.getInstance().getFile(selected.document) == file) return selected
-        val editor = manager.openTextEditor(OpenFileDescriptor(project, file), true) ?: return null
+        if (!OpenFileDescriptor(project, file).navigateInEditor(project, true)) return null
+        val composite = manager.getComposite(file) ?: return null
+        val textEditors = composite.allEditors.zip(composite.allProviders).filter { it.first is TextEditor }
+        val standardId = TextEditorProvider.getInstance().editorTypeId
+        val (textEditor, provider) =
+            textEditors.firstOrNull { it.second.editorTypeId == standardId }
+                ?: textEditors.firstOrNull() ?: return null
+        manager.setSelectedEditor(file, provider.editorTypeId)
+        val editor = (textEditor as TextEditor).editor
         // The platform says the file opened only later, so the document is bound here, before a
         // landing reads it: unbound, a mirror file is still empty and every caret falls to its top.
         opened(file)
