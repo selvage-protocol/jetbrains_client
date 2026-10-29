@@ -122,6 +122,26 @@
                 touch $out
               '';
 
+          # Exercise plan, retry and exact remote tag checks without publishing.
+          release-retry =
+            pkgs.runCommand "jetbrains-client-release-retry"
+              {
+                nativeBuildInputs = [
+                  (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.gnused
+                  pkgs.gawk
+                  pkgs.git
+                  pkgs.gnugrep
+                ];
+              }
+              ''
+                RELEASE_WORKFLOW=${self}/.github/workflows/release.yml \
+                  python3 -B ${self}/scripts/test_release_retry.py
+                touch $out
+              '';
+
           # The guard around what a workflow's `dry_run` input promises
           # (`scripts/check_dry_run_gating.py`). `release.yml` declares the input, its plan step
           # carries `inputs.dry_run == true` and every step after it `inputs.dry_run != true`,

@@ -78,6 +78,9 @@ jobs:
           python3 -B scripts/check_dry_run_gating.py .github/workflows
           TMPDIR="$RUNNER_TEMP" scripts/test-bump-version.sh
 
+      - name: release-only retries recheck remote tags before bumping
+        run: python3 -B scripts/test_release_retry.py
+
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin

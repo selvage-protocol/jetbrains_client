@@ -16,6 +16,14 @@ name: release
 # tag refuses loudly instead of computing the version after it and releasing a number nobody chose.
 # Nothing here moves a tag, and a pull request runs `ci.yml` instead and can never release.
 #
+# Two jobs, so the run that holds a write token runs no read it does not have to: `plan` resolves
+# the run — the main-refusal, the released-build guard, the next version and the change-notes
+# check — with `contents: read`, a checkout that keeps no credential and nothing written on the
+# runner or the remote; `release` runs only when `dry_run` is not true, takes the version from
+# `plan` and holds the one write it needs. `scripts/bump-version.sh --dry-run` is what derives the
+# version there: it prints the version and writes nothing, so a rehearsal and a real run name one
+# version computed on one commit.
+#
 # The change notes in `plugin/src/main/resources/META-INF/plugin.xml` are what the Marketplace shows
 # for a version, and they are prose nothing can derive, so they are written by hand before the
 # button is pressed: their first paragraph opens with the version they describe, and a dispatch
@@ -46,26 +54,24 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Nothing by default beyond reading the tree; `release` names the one write it needs. The
+# manifest and tag guards read the remote anonymously.
 permissions:
   contents: read
 
 jobs:
-  release:
+  # The read-only half of a release. It holds `contents: read`, keeps no credential in the
+  # checkout, resolves the run — the main-refusal, the released-build guard, the next version and
+  # the change-notes check — and prints the plan a dispatch rehearses with, writing nothing on the
+  # runner or the remote. It is the plan `scripts/check_dry_run_gating.py` gates the rest of the
+  # file against, and `release` below takes the one version from it.
+  plan:
     runs-on: ubuntu-24.04
-    # The gate alone is the 90 minutes `ci.yml` allows; the bump, the build and the publish are a
-    # few minutes more.
-    timeout-minutes: 120
-    # `contents: write` is the push of the bump to `main`, the tag and the GitHub Release. The
-    # checkouts keep no credential, so the token reaches git only in the two steps that push.
+    timeout-minutes: 15
     permissions:
-      contents: write
-    env:
-      # The same pinned tools `ci.yml` installs, so the gate below runs with the binaries the pull
-      # request does.
-      KTLINT_VERSION: "1.8.0"
-      KTLINT_SHA256: "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
-      LYCHEE_VERSION: "0.24.2"
-      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+      contents: read
+    outputs:
+      version: ${{ steps.target.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,7 +98,8 @@ jobs:
       - name: refuse unless the build's version is released
         run: |
           current=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin/build.gradle.kts)
-          remote=$(git ls-remote --tags origin "refs/tags/v${current}")
+          remote=$(git ls-remote --refs --tags origin "refs/tags/v${current}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${current}" '$2 == ref')
           if [ -z "$remote" ]; then
             cat >&2 <<EOF
           refusing: plugin/build.gradle.kts carries ${current}, and there is no tag v${current} on
@@ -109,7 +116,9 @@ jobs:
       # `scripts/bump-version.sh --dry-run` names the files it would write and prints the version
       # it would write as the last line of stdout, the one line this run takes its tag, its Release
       # and its commit subject from. The change notes are read here rather than after the plan, so
-      # a dry run refuses where the release would.
+      # a dry run refuses where the release would. It writes nothing, so this job stays read-only;
+      # the version leaves as a job output rather than through the environment, so no second line
+      # can ride into `$GITHUB_ENV`.
       - name: derive the version this bump cuts
         id: target
         env:
@@ -118,7 +127,8 @@ jobs:
           report=$(scripts/bump-version.sh "$BUMP" --dry-run)
           printf '%s\n' "$report"
           version=$(printf '%s\n' "$report" | tail -n1)
-          remote=$(git ls-remote --tags origin "refs/tags/v${version}")
+          remote=$(git ls-remote --refs --tags origin "refs/tags/v${version}")
+          remote=$(printf '%s\n' "$remote" | awk -v ref="refs/tags/v${version}" '$2 == ref')
           if [ -n "$remote" ]; then
             cat >&2 <<EOF
           refusing: tag v${version} already exists on the remote, so this bump would cut a version
@@ -166,6 +176,57 @@ jobs:
               the JetBrains Marketplace with publishPlugin
           EOF
 
+  # The one write half. A dry run ends at `plan`, so this job never runs for it, and the whole job
+  # carries the gate rather than each step: nothing holding `contents: write` is reached by a
+  # rehearsal. It runs only after `plan` passed, so the refusals and the version were settled by a
+  # job that could not write, and it takes the version from it rather than deriving a second one.
+  release:
+    needs: plan
+    if: inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    # The gate alone is the 90 minutes `ci.yml` allows; the bump, the build and the publish are a
+    # few minutes more.
+    timeout-minutes: 120
+    # `contents: write` is the push of the bump to `main`, the tag and the GitHub Release. The
+    # checkouts keep no credential, so the token reaches git only in the two steps that push.
+    permissions:
+      contents: write
+    env:
+      # The same pinned tools `ci.yml` installs, so the gate below runs with the binaries the pull
+      # request does.
+      KTLINT_VERSION: "1.8.0"
+      KTLINT_SHA256: "a3fd620207d5c40da6ca789b95e7f823c54e854b7fade7f613e91096a3706d75"
+      LYCHEE_VERSION: "0.24.2"
+      LYCHEE_SHA256: "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A release-only retry can reuse a successful plan after remote tags changed.
+      - name: recheck release tag preconditions before bumping
+        env:
+          TARGET: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          current=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin/build.gradle.kts)
+          if [ -z "$current" ]; then
+            echo "refusing: could not read the original version from plugin/build.gradle.kts" >&2
+            exit 1
+          fi
+          current_tag=$(git ls-remote --refs --tags origin "refs/tags/v${current}")
+          current_tag=$(printf '%s\n' "$current_tag" | awk -v ref="refs/tags/v${current}" '$2 == ref')
+          target_tag=$(git ls-remote --refs --tags origin "refs/tags/v${TARGET}")
+          target_tag=$(printf '%s\n' "$target_tag" | awk -v ref="refs/tags/v${TARGET}" '$2 == ref')
+          if [ -z "$current_tag" ]; then
+            echo "refusing: the remote no longer has the current release tag v${current}; nothing was bumped" >&2
+            exit 1
+          fi
+          if [ -n "$target_tag" ]; then
+            echo "refusing: target tag v${TARGET} already exists on the remote; nothing was bumped" >&2
+            exit 1
+          fi
+
       - name: bump the version
         if: inputs.dry_run != true
         env:
@@ -178,7 +239,7 @@ jobs:
       - name: assert the build carries the version this run cuts
         if: inputs.dry_run != true
         env:
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           built=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' plugin/build.gradle.kts)
           if [ "$built" != "$VERSION" ]; then
@@ -368,7 +429,7 @@ jobs:
         id: commit
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           git config user.name "DontBlameMe"
           git config user.email "dontblameme@noreply.codeberg.org"
@@ -382,7 +443,7 @@ jobs:
       - name: build the plugin's zip
         if: inputs.dry_run != true
         env:
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           ./gradlew --max-workers=4 --console=plain :plugin:buildPlugin
           zip="plugin/build/distributions/selvage-${VERSION}.zip"
@@ -400,17 +461,20 @@ jobs:
       - name: create and push the tag
         if: inputs.dry_run != true
         env:
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
           RELEASE_COMMIT: ${{ steps.commit.outputs.sha }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           remote_refs=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")
+          remote_refs=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v${VERSION}" '$2 == ref || $2 == ref "^{}"')
           if [ -z "$remote_refs" ]; then
             git tag -a "v${VERSION}" -m "v${VERSION}" "$RELEASE_COMMIT"
             if ! git push origin "v${VERSION}"; then
               echo "push of v${VERSION} was rejected; another run may have created it first"
               remote_refs=$(git ls-remote origin "refs/tags/v${VERSION}" "refs/tags/v${VERSION}^{}")
+              remote_refs=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v${VERSION}" '$2 == ref || $2 == ref "^{}"')
               if [ -z "$remote_refs" ]; then
                 printf 'refusing: the push of v%s failed and the remote has no such tag\n' "$VERSION" >&2
                 exit 1
@@ -418,7 +482,11 @@ jobs:
             fi
           fi
           if [ -n "$remote_refs" ]; then
-            remote_sha=$(printf '%s\n' "$remote_refs" | tail -n1 | cut -f1)
+            remote_sha=$(printf '%s\n' "$remote_refs" | awk -v ref="refs/tags/v${VERSION}" '
+              $2 == ref { direct = $1 }
+              $2 == ref "^{}" { peeled = $1 }
+              END { print peeled != "" ? peeled : direct }
+            ')
             echo "tag v${VERSION} exists at ${remote_sha}"
             if [ "$remote_sha" != "$RELEASE_COMMIT" ]; then
               printf 'refusing: tag v%s points at %s, not the commit this run releases (%s)\n' \
@@ -435,7 +503,7 @@ jobs:
         if: inputs.dry_run != true
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           {
             printf '# Selvage for JetBrains IDEs v%s\n\n' "$VERSION"
@@ -460,7 +528,7 @@ jobs:
         if: inputs.dry_run != true
         env:
           JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
-          VERSION: ${{ steps.target.outputs.version }}
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           if [ -z "${JETBRAINS_MARKETPLACE_TOKEN}" ]; then
             printf 'refusing: no JETBRAINS_MARKETPLACE_TOKEN secret is set for this repository\n' >&2
