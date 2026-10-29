@@ -69,6 +69,8 @@ job_checks() {
   # flake's Python supplying the PyYAML that job installs.
   say "checks: the release workflow's dry_run gating"
   nix build ".#checks.${system}.dry-run-gating" --no-link --print-build-logs
+  say "checks: release-only retries recheck remote tags before bumping"
+  nix build ".#checks.${system}.release-retry" --no-link --print-build-logs
   say "checks: the version bump, on a scratch copy of the tree"
   scripts/test-bump-version.sh
   say "checks: the engine's suite"
