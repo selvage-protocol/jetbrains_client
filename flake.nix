@@ -24,6 +24,7 @@
           ps.jsonschema
           ps.referencing
           ps.cryptography
+          ps.pyyaml
         ]);
       };
     in
@@ -114,7 +115,7 @@
               ''
                 shellcheck ${self}/scripts/ci-local.sh ${self}/scripts/run-peer-vectors.sh \
                   ${self}/scripts/e2e/run-two-instance.sh ${self}/scripts/bump-version.sh \
-                  ${self}/scripts/test-bump-version.sh
+                  ${self}/scripts/test-bump-version.sh ${self}/scripts/check-release-tags.sh
                 python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' ${self}/scripts/e2e/two_instance.py
                 node --check ${self}/engine/src/test/node/yjs-driver.mjs
                 node --check ${self}/engine/src/test/node/ts-peer.mjs

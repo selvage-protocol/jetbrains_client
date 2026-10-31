@@ -77,6 +77,7 @@ class ReleaseRetryTests(unittest.TestCase):
         manifest.write_text(ORIGINAL)
         scripts = self.root / "scripts"
         scripts.mkdir()
+        shutil.copyfile(ROOT / "scripts/check-release-tags.sh", scripts / "check-release-tags.sh")
         bump = scripts / "bump-version.sh"
         bump.write_text(
             f'#!{BASH}\nset -euo pipefail\n'
@@ -97,6 +98,7 @@ class ReleaseRetryTests(unittest.TestCase):
             **os.environ,
             "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
             "RUNNER_TEMP": str(self.root),
+            "GITHUB_OUTPUT": str(self.root / "guard-output"),
             # A job output or ambient variable must not replace the checkout's version.
             "CURRENT": "9.9.9",
         }
@@ -141,8 +143,8 @@ class ReleaseRetryTests(unittest.TestCase):
         return result
 
     def fixture_remote(self, refs):
-        # Keep real fixture refs under scratch; no test deletes or moves them.
         remote = Path(tempfile.mkdtemp(prefix="release-tag-remote-", dir=self.root.parent))
+        self.addCleanup(shutil.rmtree, remote)
 
         def git(*args, text=None):
             result = subprocess.run(
@@ -369,6 +371,39 @@ class ReleaseRetryTests(unittest.TestCase):
         self.remote({CURRENT_REF: "a" * 40, TARGET_REF: "b" * 40})
         self.assert_refused()
         self.assertEqual(len(self.remote_calls()), 4)
+
+    def test_late_guard_rechecks_original_version_after_bump(self):
+        self.assertEqual(self.attempt().returncode, 0)
+        self.assertIn('version = "1.2.4"', (self.root / MANIFEST).read_text())
+        self.assertEqual((self.root / "guard-output").read_text(), "current=1.2.3\n")
+        step = next(s for s in self.steps if s.get("name") == "recheck release tag preconditions before pushing")
+        for state, status in (({CURRENT_REF: "a" * 40}, 0), ({}, 1),
+                              ({CURRENT_REF: "a" * 40, TARGET_REF: "b" * 40}, 1),
+                              ({CURRENT_REF: 128}, 128)):
+            with self.subTest(state=state):
+                self.remote(state)
+                result = self.run_step(step, {"CURRENT": "1.2.3", "TARGET": "1.2.4"})
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+        names = [s.get("name") for s in self.steps]
+        self.assertEqual(names.index(step["name"]) + 1, names.index("commit and push the bump"))
+        self.assertIn("scripts/check-release-tags.sh", self.steps[1]["run"])
+        self.assertEqual(step["run"], 'bash scripts/check-release-tags.sh "$CURRENT" "$TARGET"')
+        self.assertEqual(step["env"]["CURRENT"], "${{ steps.preconditions.outputs.current }}")
+        self.assertEqual(step["if"], "inputs.dry_run != true")
+
+    def test_bumped_tree_gate_runs_retry_suite(self):
+        step = next(s for s in self.steps if s.get("name") ==
+                    "release-only retries recheck remote tags before bumping")
+        self.assertIn("python3 -B scripts/test_release_retry.py", step["run"])
+        self.assertEqual(step["if"], "inputs.dry_run != true")
+        self.assertLess(self.steps.index(step), next(i for i, s in enumerate(self.steps)
+                                                   if s.get("name") == "commit and push the bump"))
+
+    def test_fixture_remotes_are_cleaned_up(self):
+        remote, _ = self.fixture_remote({CURRENT_REF: "released"})
+        self.assertTrue(remote.is_dir())
+        self.doCleanups()
+        self.assertFalse(remote.exists())
 
     def test_guard_is_unconditional_between_checkout_and_first_bump(self):
         self.assertTrue(self.steps[0]["uses"].startswith("actions/checkout@"))

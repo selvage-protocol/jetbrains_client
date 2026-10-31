@@ -205,6 +205,7 @@ jobs:
 
       # A release-only retry can reuse a successful plan after remote tags changed.
       - name: recheck release tag preconditions before bumping
+        id: preconditions
         env:
           TARGET: ${{ needs.plan.outputs.version }}
         run: |
@@ -214,18 +215,8 @@ jobs:
             echo "refusing: could not read the original version from plugin/build.gradle.kts" >&2
             exit 1
           fi
-          current_tag=$(git ls-remote --refs --tags origin "refs/tags/v${current}")
-          current_tag=$(printf '%s\n' "$current_tag" | awk -v ref="refs/tags/v${current}" '$2 == ref')
-          target_tag=$(git ls-remote --refs --tags origin "refs/tags/v${TARGET}")
-          target_tag=$(printf '%s\n' "$target_tag" | awk -v ref="refs/tags/v${TARGET}" '$2 == ref')
-          if [ -z "$current_tag" ]; then
-            echo "refusing: the remote no longer has the current release tag v${current}; nothing was bumped" >&2
-            exit 1
-          fi
-          if [ -n "$target_tag" ]; then
-            echo "refusing: target tag v${TARGET} already exists on the remote; nothing was bumped" >&2
-            exit 1
-          fi
+          bash scripts/check-release-tags.sh "$current" "$TARGET"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
 
       - name: bump the version
         if: inputs.dry_run != true
@@ -288,6 +279,10 @@ jobs:
           python3 -B scripts/test_check_dry_run_gating.py
           python3 -B scripts/check_dry_run_gating.py .github/workflows
           TMPDIR="$RUNNER_TEMP" scripts/test-bump-version.sh
+
+      - name: release-only retries recheck remote tags before bumping
+        if: inputs.dry_run != true
+        run: TMPDIR="$RUNNER_TEMP" python3 -B scripts/test_release_retry.py
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         if: inputs.dry_run != true
@@ -419,6 +414,13 @@ jobs:
               "$(cat "$RUNNER_TEMP/bumped-files.txt")" "$(cat "$RUNNER_TEMP/gated-files.txt")" >&2
             exit 1
           fi
+
+      - name: recheck release tag preconditions before pushing
+        if: inputs.dry_run != true
+        env:
+          CURRENT: ${{ steps.preconditions.outputs.current }}
+          TARGET: ${{ needs.plan.outputs.version }}
+        run: bash scripts/check-release-tags.sh "$CURRENT" "$TARGET"
 
       # The one push this workflow makes to `main`. A bump pull request would carry no checks at
       # all, since an event created with this workflow's own `GITHUB_TOKEN` starts no run, so the

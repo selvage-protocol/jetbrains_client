@@ -45,7 +45,7 @@ job_lint() {
   ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
   say "lint: shellcheck"
   shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh \
-    scripts/bump-version.sh scripts/test-bump-version.sh
+    scripts/bump-version.sh scripts/test-bump-version.sh scripts/check-release-tags.sh
   python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
   say "lint: actionlint over the workflows"
   actionlint
