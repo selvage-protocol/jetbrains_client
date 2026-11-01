@@ -10,9 +10,9 @@ as `Selvage`. Hosting, joining by invite, editing together, carets, go to and fo
 The plugin is feature-frozen at that state: no further feature lands here while the release is
 prepared.
 
-The [recorded demo](https://selvage.dontblameme.dev/get-it-working#recording) shows the same room
-from the two Neovim windows, the browser page and an MCP agent; this plugin joins it the same way,
-from the invite link.
+The [recorded demo](https://github.com/selvage-protocol/reference_server/blob/main/docs/images/selvage-demo.mp4)
+shows the same room from the two Neovim windows, the browser page and an MCP agent; this plugin
+joins it the same way, from the invite link.
 
 ## Get it working
 
