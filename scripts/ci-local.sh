@@ -45,7 +45,7 @@ job_lint() {
   ktlint --relative "engine/**/*.kt" "plugin/**/*.kt" "*.kts" "engine/*.kts" "plugin/*.kts"
   say "lint: shellcheck"
   shellcheck scripts/ci-local.sh scripts/run-peer-vectors.sh scripts/e2e/run-two-instance.sh \
-    scripts/bump-version.sh scripts/test-bump-version.sh
+    scripts/bump-version.sh scripts/test-bump-version.sh scripts/check-release-tags.sh
   python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' scripts/e2e/two_instance.py
   say "lint: actionlint over the workflows"
   actionlint
@@ -69,6 +69,8 @@ job_checks() {
   # flake's Python supplying the PyYAML that job installs.
   say "checks: the release workflow's dry_run gating"
   nix build ".#checks.${system}.dry-run-gating" --no-link --print-build-logs
+  say "checks: release-only retries recheck remote tags before bumping"
+  nix build ".#checks.${system}.release-retry" --no-link --print-build-logs
   say "checks: the version bump, on a scratch copy of the tree"
   scripts/test-bump-version.sh
   say "checks: the engine's suite"
