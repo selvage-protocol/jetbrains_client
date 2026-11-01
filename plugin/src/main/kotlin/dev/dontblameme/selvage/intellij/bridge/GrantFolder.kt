@@ -13,7 +13,7 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.BasicFileAttributes
 
 /**
- * The folders a host shares, read on a peer's behalf (`DESIGN.md` §4.2). A path a peer names is
+ * The folders a host shares, read on a peer's behalf. A path a peer names is
  * untrusted: it must name one of the roots — the path's own first segment when there is more than
  * one — and [Grant.isGrantedPath] then holds for the path inside it, which is resolved one segment
  * at a time, never following a link. A link, a directory where a file was expected, or a name that

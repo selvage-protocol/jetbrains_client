@@ -6,7 +6,7 @@ import java.nio.file.Path
 
 /**
  * The host-side read a peer's request drives, and the walk that lists the folder, against paths that
- * try to leave it (`AGENTS.md` §3): `..`, an absolute path, a link to a directory outside, a link to
+ * try to leave it: `..`, an absolute path, a link to a directory outside, a link to
  * a file outside, a path through a link, a case-folded excluded name, and an ignored file.
  */
 class GrantFolderTest : TestCase() {

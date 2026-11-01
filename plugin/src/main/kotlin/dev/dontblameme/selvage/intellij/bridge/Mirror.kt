@@ -17,7 +17,7 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * A guest's mirror (`DESIGN.md` §4.2): the room's listing as a real directory, so code insight works
+ * A guest's mirror: the room's listing as a real directory, so code insight works
  * on ordinary paths. A cache of the room, never a source of truth: an empty file per listed path,
  * filled when a document is fetched, gone when the session is left. Ported from
  * `vscode_client/src/adapter/mirror.ts`; the marker carries the same fields (room, window, pid and
