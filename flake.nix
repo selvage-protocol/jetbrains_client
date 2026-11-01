@@ -1,7 +1,7 @@
 {
   description = "Selvage for JetBrains IDEs: the dev shell and the server-free checks";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
     { self, nixpkgs }:
