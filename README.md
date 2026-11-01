@@ -7,6 +7,12 @@ share a link, come edit my code with me.
 
 Status: published on the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/34763-selvage)
 as `Selvage`. Hosting, joining by invite, editing together, carets, go to and follow all work today.
+The plugin is feature-frozen at that state: no further feature lands here while the release is
+prepared.
+
+The [recorded demo](https://selvage.dontblameme.dev/get-it-working#recording) shows the same room
+from the two Neovim windows, the browser page and an MCP agent; this plugin joins it the same way,
+from the invite link.
 
 ## Get it working
 
