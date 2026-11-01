@@ -1,9 +1,9 @@
 package dev.dontblameme.selvage.intellij.bridge
 
 /**
- * Every sentence this client puts in front of a person, worded as the VS Code client words it
- * (`docs/studies/client-command-parity.md` §5 in the design notes). `VocabularyTest` renders each
- * with `${}` for its holes and requires it among the sentences `vscode_client/test/vocabulary.test.ts`
+ * Every sentence this client puts in front of a person, worded as the VS Code client words it.
+ * `VocabularyTest` renders each with `${}` for its holes and requires it among the sentences
+ * `vscode_client/test/vocabulary.test.ts`
  * pins, except the few this editor says in its own words, which it pins by name.
  */
 object Say {
