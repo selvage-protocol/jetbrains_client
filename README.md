@@ -7,8 +7,6 @@ share a link, come edit my code with me.
 
 Status: published on the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/34763-selvage)
 as `Selvage`. Hosting, joining by invite, editing together, carets, go to and follow all work today.
-The plugin is feature-frozen at that state: no further feature lands here while the release is
-prepared.
 
 ## Get it working
 
