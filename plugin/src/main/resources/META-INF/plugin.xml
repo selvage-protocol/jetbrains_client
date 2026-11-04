@@ -24,6 +24,10 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.4.3</p>
+    <ul>
+      <li>Updates the Gradle setup action used to build and test the plugin. The plugin itself is unchanged.</li>
+    </ul>
     <p>0.4.2</p>
     <ul>
       <li>Removes the deprecated editor-opening API warning reported by IntelliJ IDEA 2026.3 EAP.</li>
