@@ -921,7 +921,7 @@ class SelvageService : Disposable {
     }
 
     companion object {
-        const val CLIENT = "selvage-jetbrains/0.4.3"
+        const val CLIENT = "selvage-jetbrains/0.4.4"
 
         /** The participant pickers' placeholder. */
         const val PICK_A_PARTICIPANT = "Pick a participant"
