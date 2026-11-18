@@ -4,7 +4,7 @@
   "description": "The yjs the differential test drives, pinned to the versions the other clients carry.",
   "type": "module",
   "dependencies": {
-    "lib0": "0.2.119",
+    "lib0": "0.2.120",
     "y-protocols": "1.0.7",
     "yjs": "13.6.33"
   }
