@@ -141,7 +141,17 @@ class Item(
      * such a struct cannot exist yet, and yjs throws on it in the middle of integration.
      */
     internal fun requireEarlierOwnDependencies() {
-        for (dependency in listOfNotNull(origin, rightOrigin, parentID)) {
+        origin?.let { dependency ->
+            if (dependency.client == id.client && dependency.clock >= id.clock) {
+                throw DecodeException("item $id depends on $dependency, which is not before it")
+            }
+        }
+        rightOrigin?.let { dependency ->
+            if (dependency.client == id.client && dependency.clock >= id.clock) {
+                throw DecodeException("item $id depends on $dependency, which is not before it")
+            }
+        }
+        parentID?.let { dependency ->
             if (dependency.client == id.client && dependency.clock >= id.clock) {
                 throw DecodeException("item $id depends on $dependency, which is not before it")
             }

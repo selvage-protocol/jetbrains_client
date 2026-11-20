@@ -1,24 +1,24 @@
 package dev.dontblameme.selvage.sealed
 
-import java.io.ByteArrayOutputStream
-
 /** The byte helpers §6.1's layout is written in: lib0's `varUint` and `varUint8Array`, and hex. */
 object Bytes {
     private const val MAX_SAFE = 9_007_199_254_740_991L
 
     fun varUint(value: Long): ByteArray {
         require(value in 0..MAX_SAFE) { "a varUint is a non-negative count, and this is $value" }
-        val out = ByteArrayOutputStream()
+        val out = ByteArray(8)
+        var at = 0
         var rest = value
         while (true) {
             val byte = (rest and 0x7f).toInt()
             rest = rest ushr 7
             if (rest == 0L) {
-                out.write(byte)
-                return out.toByteArray()
+                out[at++] = byte.toByte()
+                break
             }
-            out.write(byte or 0x80)
+            out[at++] = (byte or 0x80).toByte()
         }
+        return out.copyOf(at)
     }
 
     fun varUint8Array(raw: ByteArray): ByteArray = concat(varUint(raw.size.toLong()), raw)
@@ -52,7 +52,18 @@ object Bytes {
         return out
     }
 
-    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    private const val HEX = "0123456789abcdef"
+
+    fun hex(bytes: ByteArray): String {
+        val out = CharArray(bytes.size * 2)
+        var at = 0
+        for (byte in bytes) {
+            val value = byte.toInt() and 0xff
+            out[at++] = HEX[value ushr 4]
+            out[at++] = HEX[value and 0x0f]
+        }
+        return String(out)
+    }
 
     fun fromHex(digits: String): ByteArray {
         val compact = digits.filterNot { it.isWhitespace() }

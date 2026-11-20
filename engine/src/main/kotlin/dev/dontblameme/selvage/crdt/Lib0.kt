@@ -1,6 +1,5 @@
 package dev.dontblameme.selvage.crdt
 
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
@@ -15,27 +14,53 @@ class DecodeException(
 const val MAX_SAFE_INTEGER: Long = (1L shl 53) - 1
 
 /** lib0's `encoding`: the primitives yjs and y-protocols write. */
+internal class GrowingBytes(
+    initialCapacity: Int,
+) {
+    private var bytes = ByteArray(maxOf(1, initialCapacity))
+    var size: Int = 0
+        private set
+
+    fun ensure(extra: Int) {
+        if (extra <= bytes.size - size) return
+        val required = size.toLong() + extra
+        var capacity = bytes.size.toLong()
+        while (capacity < required) capacity *= 2
+        if (capacity > Int.MAX_VALUE) throw OutOfMemoryError("lib0 output too large")
+        bytes = bytes.copyOf(capacity.toInt())
+    }
+
+    fun write(value: Int) {
+        ensure(1)
+        bytes[size++] = value.toByte()
+    }
+
+    fun writeAll(value: ByteArray) {
+        ensure(value.size)
+        value.copyInto(bytes, size)
+        size += value.size
+    }
+
+    fun finish(): ByteArray = bytes.copyOf(size)
+}
+
 class Lib0Encoder {
-    private val out = ByteArrayOutputStream()
+    private val out = GrowingBytes(32)
 
-    val size: Int get() = out.size()
+    val size: Int get() = out.size
 
-    fun toByteArray(): ByteArray = out.toByteArray()
+    fun toByteArray(): ByteArray = out.finish()
 
-    fun writeUint8(value: Int) {
-        out.write(value and 0xff)
-    }
+    fun writeUint8(value: Int) = out.write(value and 0xff)
 
-    fun writeBytes(bytes: ByteArray) {
-        out.write(bytes, 0, bytes.size)
-    }
+    fun writeBytes(bytes: ByteArray) = out.writeAll(bytes)
 
     /** LEB128. */
     fun writeVarUint(value: Long) {
         require(value in 0..MAX_SAFE_INTEGER) { "varUint out of range: $value" }
         var num = value
         while (num > 0x7f) {
-            out.write((0x80 or (num and 0x7f).toInt()))
+            out.write(0x80 or (num and 0x7f).toInt())
             num = num ushr 7
         }
         out.write(num.toInt())
@@ -70,11 +95,30 @@ class Lib0Encoder {
     /** UTF-8 as `TextEncoder` writes it: a lone surrogate becomes U+FFFD. */
     fun writeVarString(value: String) = writeVarUint8Array(Utf8.encode(value))
 
-    fun writeFloat32(value: Float) = writeBytes(ByteBuffer.allocate(4).putFloat(value).array())
+    fun writeFloat32(value: Float) {
+        val bits = java.lang.Float.floatToRawIntBits(value)
+        out.write(bits ushr 24)
+        out.write(bits ushr 16)
+        out.write(bits ushr 8)
+        out.write(bits)
+    }
 
-    fun writeFloat64(value: Double) = writeBytes(ByteBuffer.allocate(8).putDouble(value).array())
+    fun writeFloat64(value: Double) {
+        val bits = java.lang.Double.doubleToRawLongBits(value)
+        var shift = 56
+        while (shift >= 0) {
+            out.write((bits ushr shift).toInt())
+            shift -= 8
+        }
+    }
 
-    fun writeBigInt64(value: Long) = writeBytes(ByteBuffer.allocate(8).putLong(value).array())
+    fun writeBigInt64(value: Long) {
+        var shift = 56
+        while (shift >= 0) {
+            out.write((value ushr shift).toInt())
+            shift -= 8
+        }
+    }
 }
 
 /** lib0's `decoding`, strict: every read that runs past the end throws [DecodeException]. */
@@ -162,7 +206,7 @@ class Lib0Decoder(
 
 internal object Utf8 {
     fun encode(value: String): ByteArray {
-        val out = ByteArrayOutputStream(value.length)
+        val out = GrowingBytes(value.length)
         var i = 0
         while (i < value.length) {
             val c = value[i]
@@ -198,7 +242,7 @@ internal object Utf8 {
             }
             i++
         }
-        return out.toByteArray()
+        return out.finish()
     }
 
     fun decode(bytes: ByteArray): String {
