@@ -24,6 +24,7 @@
     · <a href="https://github.com/selvage-protocol/jetbrains_client/issues">Report an issue</a></p>
     ]]></description>
     <change-notes><![CDATA[
+    <p>0.4.6 cuts allocation churn in the shared codecs that run on every keystroke and frame. Update encoding allocates 3,993 B per operation instead of 4,945 B, 19.3% less. Frame reading allocates 60,688 B instead of 67,483 B, 10.1% less. The engine suite ran in 26.5 s instead of 27.8 s.</p>
     <p>0.4.5</p>
     <ul>
       <li>Updates the actions and the test harness dependency pins used to build and test the plugin. The plugin itself is unchanged.</li>
