@@ -62,7 +62,8 @@ class YText internal constructor(
         if (text.isEmpty()) return
         doc.transact(origin) { transaction ->
             val pos = findPosition(transaction, index)
-            val attributes = HashMap(pos.currentAttributes)
+            val attributes =
+                if (pos.currentAttributes.isEmpty()) emptyMap() else HashMap(pos.currentAttributes)
             minimizeAttributeChanges(pos, attributes)
             val store = doc.store
             val clientID = doc.clientID
